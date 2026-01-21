@@ -1,7 +1,8 @@
 import paramiko
 import threading
 import time
-from typing import Tuple, Optional
+import concurrent.futures
+from typing import Tuple, Optional, Dict, List
 from functools import lru_cache
 from contextlib import contextmanager
 import logging
@@ -80,7 +81,7 @@ class SSHPool:
         conn = self.get_connection(host)
         return conn.execute(command, timeout)
     
-    def execute_all(self, hosts: list, command: str) -> Dict[str, Tuple[str, str]]:
+    def execute_all(self, hosts: List[str], command: str) -> Dict[str, Tuple[str, str]]:
         """Execute command on all hosts in parallel"""
         results = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(hosts)) as executor:

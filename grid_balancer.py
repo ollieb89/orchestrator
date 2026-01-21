@@ -2,6 +2,7 @@ import json
 import re
 import subprocess
 import sys
+from core.health_check import HealthChecker
 
 
 def get_config():
@@ -63,19 +64,15 @@ def find_best_node():
     config = get_config()
     nodes = config["nodes"]
 
-    best_node = None
-    best_score = 10000
+    checker = HealthChecker(timeout=3, cpu_weight=10.0, gpu_weight=1.0)
+    healths = checker.check_all_nodes(nodes, max_workers=min(20, len(nodes)))
 
-    # Parallelize this in production, sequential for safety here
-    for node in nodes:
-        score = check_node_health(node)
-        # print(f"Debug: {node} Score: {score}", file=sys.stderr)
-
-        if score < best_score:
-            best_score = score
-            best_node = node
-
-    return best_node
+    healthy = [h for h in healths if h.is_healthy]
+    if healthy:
+        return healthy[0].host
+    if healths:
+        return healths[0].host
+    return None
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import ray
 import time
 import logging
-from typing import List, Callable, Any, Dict
+from typing import List, Callable, Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
