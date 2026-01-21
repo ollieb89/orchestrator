@@ -1,0 +1,38 @@
+nodes:
+  - gpu1
+  - gpu2
+
+remote_root: ~/grid_workspace
+
+ssh:
+  timeout: 10
+  connect_timeout: 5
+  max_retries: 3
+  pool_size: 10
+  key_file: null
+
+health_check:
+  timeout: 3
+  max_workers: 20
+  cpu_weight: 1.0
+  gpu_weight: 3.0
+  refresh_interval: 60
+
+sync:
+  exclude_patterns:
+    - .git
+    - __pycache__
+    - .env
+    - '*.pyc'
+    - node_modules
+    - .next
+  use_checksums: true
+  follow_symlinks: false
+  max_parallel_transfers: 5
+
+ray:
+  dashboard_port: 8265
+  redis_port: 6379
+  head_bind_all: true
+  namespace: default
+  log_level: info
