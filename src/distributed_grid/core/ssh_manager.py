@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import paramiko
@@ -28,6 +29,27 @@ class SSHManager:
         self._nodes_by_name: dict[str, NodeConfig] = {n.name: n for n in nodes}
         self._clients: Dict[str, paramiko.SSHClient] = {}
         self._lock = asyncio.Lock()
+        self._ssh_config = self._load_ssh_config()
+
+    @staticmethod
+    def _load_ssh_config() -> Optional[paramiko.SSHConfig]:
+        cfg_path = Path.home() / ".ssh" / "config"
+        if not cfg_path.exists():
+            return None
+        try:
+            cfg = paramiko.SSHConfig()
+            cfg.parse(cfg_path.open())
+            return cfg
+        except Exception:
+            return None
+
+    def _lookup_ssh_config(self, host_alias: str) -> Dict[str, object]:
+        if not self._ssh_config:
+            return {}
+        try:
+            return self._ssh_config.lookup(host_alias) or {}
+        except Exception:
+            return {}
 
     async def initialize(self) -> None:
         """Establish SSH connections to all configured nodes."""
@@ -82,13 +104,55 @@ class SSHManager:
             def _connect() -> paramiko.SSHClient:
                 client = paramiko.SSHClient()
                 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                client.connect(
-                    hostname=node.host,
-                    port=node.port,
-                    username=node.user,
-                    key_filename=str(node.ssh_key_path) if node.ssh_key_path else None,
-                    timeout=10,
-                )
+
+                # Base values from config
+                base_hostname = node.host
+                base_port = node.port
+                base_username = node.user
+                base_key_filename = str(node.ssh_key_path) if node.ssh_key_path else None
+
+                # Values from ~/.ssh/config (match `ssh <alias>` behavior)
+                ssh_cfg = self._lookup_ssh_config(node.host)
+                cfg_hostname = ssh_cfg.get("hostname") or ssh_cfg.get("host")
+                cfg_user = ssh_cfg.get("user")
+                cfg_port = ssh_cfg.get("port")
+                cfg_identity = ssh_cfg.get("identityfile")
+                cfg_key_filename: Optional[str] = None
+                if isinstance(cfg_identity, list) and cfg_identity:
+                    cfg_key_filename = cfg_identity[0]
+                elif isinstance(cfg_identity, str) and cfg_identity:
+                    cfg_key_filename = cfg_identity
+
+                # Try explicit config first; if it fails, retry using ssh config overrides.
+                attempts = [
+                    (base_hostname, base_port, base_username, base_key_filename),
+                    (
+                        str(cfg_hostname) if cfg_hostname else base_hostname,
+                        int(cfg_port) if cfg_port else base_port,
+                        str(cfg_user) if cfg_user else base_username,
+                        cfg_key_filename or base_key_filename,
+                    ),
+                ]
+
+                last_exc: Optional[Exception] = None
+                for hostname, port, username, key_filename in attempts:
+                    try:
+                        client.load_system_host_keys()
+                        client.connect(
+                            hostname=hostname,
+                            port=port,
+                            username=username,
+                            key_filename=key_filename,
+                            timeout=10,
+                            allow_agent=True,
+                            look_for_keys=True,
+                        )
+                        return client
+                    except Exception as e:
+                        last_exc = e
+
+                assert last_exc is not None
+                raise last_exc
                 return client
 
             client = await asyncio.to_thread(_connect)
