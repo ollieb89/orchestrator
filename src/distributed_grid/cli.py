@@ -378,9 +378,21 @@ def execute(ctx, command, config, node, all_nodes, timeout):
     async def _execute():
         try:
             cluster_config = ClusterConfig.from_yaml(config)
-            
-            # Initialize SSH manager
-            ssh_manager = SSHManager(cluster_config.nodes)
+
+            # Determine target nodes first (avoid connecting to unrelated nodes)
+            if all_nodes:
+                target_nodes = cluster_config.nodes
+            elif node:
+                target_node = cluster_config.get_node_by_name(node)
+                if not target_node:
+                    raise click.ClickException(f"Node '{node}' not found in configuration")
+                target_nodes = [target_node]
+            else:
+                # Execute on first available node (simplified - could implement smart selection)
+                target_nodes = [cluster_config.nodes[0]]
+
+            # Initialize SSH manager for only the target nodes
+            ssh_manager = SSHManager(target_nodes)
             await ssh_manager.initialize()
             
             try:
@@ -390,7 +402,7 @@ def execute(ctx, command, config, node, all_nodes, timeout):
                 if all_nodes:
                     # Execute on all nodes
                     console.print(f"[blue]Executing '{command}' on all {len(cluster_config.nodes)} nodes...[/blue]")
-                    results = await executor.execute_on_nodes(command, cluster_config.nodes)
+                    results = await executor.execute_on_nodes(command, target_nodes)
                     
                     for node_name, result in results.items():
                         console.print(f"\n[cyan]{node_name}:[/cyan]")
@@ -398,20 +410,14 @@ def execute(ctx, command, config, node, all_nodes, timeout):
                         
                 elif node:
                     # Execute on specific node
-                    target_node = cluster_config.get_node_by_name(node)
-                    if not target_node:
-                        raise click.ClickException(f"Node '{node}' not found in configuration")
-                    
                     console.print(f"[blue]Executing '{command}' on {node}...[/blue]")
-                    result = await executor.execute_on_nodes(command, [target_node])
+                    result = await executor.execute_on_nodes(command, target_nodes)
                     console.print(result[node])
                     
                 else:
-                    # Execute on first available node (simplified - could implement smart selection)
-                    target_node = cluster_config.nodes[0]
-                    console.print(f"[blue]Executing '{command}' on {target_node.name}...[/blue]")
-                    result = await executor.execute_on_nodes(command, [target_node])
-                    console.print(result[target_node.name])
+                    console.print(f"[blue]Executing '{command}' on {target_nodes[0].name}...[/blue]")
+                    result = await executor.execute_on_nodes(command, target_nodes)
+                    console.print(result[target_nodes[0].name])
                     
             finally:
                 await ssh_manager.close_all()
