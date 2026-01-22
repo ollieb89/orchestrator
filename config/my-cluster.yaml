@@ -34,9 +34,9 @@ nodes:
 - gpu_count: 1
   host: gpu2
   memory_gb: 32
-  name: ml-server
+  name: gpu2
   port: 22
-  role: gpu2
+  role: worker
   tags:
   - gpu
   - cuda
