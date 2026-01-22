@@ -36,3 +36,16 @@ ray:
   head_bind_all: true
   namespace: default
   log_level: info
+
+resource_sharing:
+  enabled: true
+  check_interval: 60
+  offer_expiry: 300
+  max_offers_per_node: 5
+  thresholds:
+    gpu_utilization_max: 20.0
+    gpu_memory_min_mb: 1024.0
+    memory_percent_max: 50.0
+    memory_min_gb: 2.0
+    cpu_percent_max: 30.0
+    cpu_min_cores: 1.0

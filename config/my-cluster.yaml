@@ -1,0 +1,44 @@
+execution:
+  default_gpus_per_node: 1
+  default_nodes: 3
+  retry_attempts: 3
+  timeout_seconds: 3600
+  working_directory: /tmp/grid
+logging:
+  format: json
+  level: INFO
+name: my-cluster
+nodes:
+- gpu_count: 1
+  host: gpu-master
+  memory_gb: 32
+  name: gpu-master
+  port: 22
+  role: master
+  tags:
+  - gpu
+  - cuda
+  - master
+  user: ollie
+- gpu_count: 1
+  host: gpu1
+  memory_gb: 32
+  name: gpu1
+  port: 22
+  role: worker
+  tags:
+  - gpu
+  - cuda
+  - worker
+  user: ob
+- gpu_count: 1
+  host: gpu2
+  memory_gb: 32
+  name: ml-server
+  port: 22
+  role: worker
+  tags:
+  - gpu
+  - cuda
+  - worker
+  user: ollie

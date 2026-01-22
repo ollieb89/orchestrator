@@ -1,0 +1,6 @@
+# Host entries for the GPU cluster
+# Add these to your /etc/hosts file on all machines
+
+192.168.1.100 gpu-master
+192.168.1.101 gpu1
+192.168.1.102 gpu2

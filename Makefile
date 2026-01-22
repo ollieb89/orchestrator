@@ -11,23 +11,23 @@ help:
 	@echo "make clean      - Remove build artifacts"
 
 install:
-	pip install -e .
+	poetry install
 
 dev:
-	pip install -e '.[dev]'
+	poetry install --with dev
 
 test:
-	pytest -v --cov=grid --cov-report=html
+	poetry run pytest -v
 
 lint:
-	ruff check .
-	mypy grid
+	poetry run ruff check .
+	poetry run mypy src
 
 format:
-	black .
-	isort .
+	poetry run ruff format .
+	poetry run ruff check . --fix
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
-	rm -rf .pytest_cache .coverage htmlcov dist build *.egg-info
+	rm -rf .pytest_cache .coverage htmlcov dist build *.egg-info .ruff_cache .mypy_cache
