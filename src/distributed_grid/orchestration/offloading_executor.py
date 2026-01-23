@@ -16,6 +16,7 @@ from enum import Enum
 import structlog
 import yaml
 from ray.dashboard.modules.job.sdk import JobSubmissionClient
+from ray.dashboard.modules.job.common import JobStatus
 
 from distributed_grid.core.ssh_manager import SSHManager
 from distributed_grid.config import ClusterConfig, NodeConfig
@@ -389,10 +390,10 @@ if __name__ == "__main__":
         try:
             while task.status == OffloadingStatus.RUNNING:
                 # Get job status
-                job_info = self._job_client.get_job_status(task.ray_job_id)
+                job_status = self._job_client.get_job_status(task.ray_job_id)
                 
-                if job_info.status in {"SUCCEEDED", "FAILED", "STOPPED"}:
-                    task.status = OffloadingStatus.COMPLETED if job_info.status == "SUCCEEDED" else OffloadingStatus.FAILED
+                if job_status in {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.STOPPED}:
+                    task.status = OffloadingStatus.COMPLETED if job_status == JobStatus.SUCCEEDED else OffloadingStatus.FAILED
                     task.completed_at = datetime.now(UTC)
                     
                     # Move to history
