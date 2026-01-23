@@ -19,7 +19,21 @@ def resolve_hostname_to_ip(hostname: str) -> Optional[str]:
         IP address if resolvable, None otherwise.
     """
     try:
-        return socket.gethostbyname(hostname)
+        ip = socket.gethostbyname(hostname)
+        # Handle cases where local hostname resolves to loopback (127.x.x.x)
+        # but Ray identifies the head node by its external IP
+        if ip.startswith("127."):
+            # Try to get the external IP of the current host
+            try:
+                # This is a common trick to get the IP address used for routing
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                external_ip = s.getsockname()[0]
+                s.close()
+                return external_ip
+            except Exception:
+                pass
+        return ip
     except socket.gaierror:
         return None
 
@@ -29,7 +43,8 @@ def get_host_to_ray_node_mapping() -> Dict[str, str]:
     Get mapping from host addresses to Ray node IDs.
     
     Returns:
-        Dict mapping host addresses (both hostnames and IPs) to Ray node IDs for alive nodes only.
+        Dict mapping host addresses (both hostnames and IPs) to Ray node identification strings
+        for alive nodes only. Note: Ray uses IP addresses for 'node:IP' resource constraints.
     """
     ray_nodes = ray.nodes()
     host_to_ray_id = {}
@@ -37,10 +52,10 @@ def get_host_to_ray_node_mapping() -> Dict[str, str]:
     for rn in ray_nodes:
         if rn.get("Alive", False):
             node_ip = rn.get("NodeManagerAddress", "")
-            node_id = rn.get("NodeID", "")
-            if node_ip and node_id:
-                # Map by IP address
-                host_to_ray_id[node_ip] = node_id
+            if node_ip:
+                # Use IP address as the identification string because Ray 
+                # identifies nodes by IP in resources (e.g., 'node:192.168.1.101')
+                host_to_ray_id[node_ip] = node_ip
                 
     return host_to_ray_id
 

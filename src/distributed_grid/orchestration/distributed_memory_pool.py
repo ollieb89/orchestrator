@@ -92,14 +92,29 @@ class DistributedMemoryPool:
         
         # Get Ray node mapping
         host_to_ray_id = get_host_to_ray_node_mapping()
+        logger.debug("Current Ray node mapping", mapping=host_to_ray_id)
         
         # Create memory store actors on each node
         for node in self.cluster_config.nodes:
             if node.role == "worker":
                 # Find the actual Ray node ID for this host
-                ray_node_id = host_to_ray_id.get(node.host)
+                # Use resolve_hostname_to_ip to normalize node.host
+                from distributed_grid.utils.node_utils import resolve_hostname_to_ip
+                
+                host_ip = resolve_hostname_to_ip(node.host)
+                logger.debug("Resolving host", host=node.host, resolved_ip=host_ip)
+                
+                ray_node_id = host_to_ray_id.get(host_ip) if host_ip else None
+                
+                # Fallback to direct match if IP resolution failed or didn't match
                 if not ray_node_id:
-                    logger.warning(f"Ray node not found for host {node.host}, skipping memory store")
+                    ray_node_id = host_to_ray_id.get(node.host)
+                
+                if not ray_node_id:
+                    logger.warning("Ray node not found for host", 
+                                 host=node.host, 
+                                 resolved_ip=host_ip,
+                                 available_ips=list(host_to_ray_id.keys()))
                     continue
                 
                 # Create actor pinned to specific node using actual Ray node ID
@@ -111,7 +126,7 @@ class DistributedMemoryPool:
                 ).remote(node.name)
                 
                 self.memory_stores[node.name] = store
-                logger.info(f"Created memory store on {node.name} (Ray node: {ray_node_id})")
+                logger.info("Created memory store", node_name=node.name, ray_node_id=ray_node_id)
                 
         self._initialized = True
         logger.info("Distributed memory pool initialized", 
