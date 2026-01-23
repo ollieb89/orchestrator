@@ -12,7 +12,7 @@ import structlog
 
 from distributed_grid.config import ClusterConfig
 from distributed_grid.core.ssh_manager import SSHManager
-from distributed_grid.monitoring.resource_metrics import ResourceMetricsCollector
+from distributed_grid.monitoring.resource_metrics import ResourceMetricsCollector, ResourceType
 from distributed_grid.orchestration.resource_sharing_manager import (
     ResourceSharingManager,
     SharingPolicy,
@@ -61,6 +61,11 @@ class ResourceSharingOrchestrator:
         # State
         self._initialized = False
         self._running = False
+        self.memory_watchdog_active = True  # Enabled by default when resource sharing is on
+        
+        # Registry for objects that can be spilled to remote memory during pressure
+        self._spillable_objects: Dict[str, Dict[str, Any]] = {}
+        self._spilled_objects: Dict[str, str] = {}  # object_id -> block_id
         
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -92,6 +97,8 @@ class ResourceSharingOrchestrator:
             ssh_manager=self.ssh_manager,
             collection_interval=float(config.monitoring_interval_seconds),
         )
+        # Register pressure callback for automatic mitigation
+        self.metrics_collector.register_pressure_callback(self._handle_resource_pressure)
         await self.metrics_collector.start()
         
         # Map string policy to enum
@@ -150,7 +157,147 @@ class ResourceSharingOrchestrator:
         self.distributed_memory_pool = DistributedMemoryPool(self.cluster_config)
         await self.distributed_memory_pool.initialize()
         logger.info("Distributed memory pool initialized")
+
+    async def _handle_resource_pressure(self, node_id: str, resource_type: ResourceType, pressure: float) -> None:
+        """Handle resource pressure events by triggering automatic mitigation."""
+        if not self._running:
+            return
+
+        is_critical = pressure > 0.95
+        log_level = "CRITICAL" if is_critical else "WARNING"
         
+        logger.log(
+            getattr(logging, log_level),
+            "High resource pressure detected",
+            node=node_id,
+            resource=resource_type,
+            pressure=f"{pressure*100:.1f}%",
+            mode="EVACUATION" if is_critical else "MITIGATION"
+        )
+
+        # Only trigger mitigation for memory and CPU pressure
+        if resource_type not in [ResourceType.MEMORY, ResourceType.CPU]:
+            return
+
+        # Attempt to offload processes from the pressured node
+        try:
+            # Discover all candidates
+            recommendations = await self.offloading_detector.detect_offloading_candidates()
+            
+            # Filter recommendations for the pressured node
+            node_recs = [r for r in recommendations if r.source_node == node_id]
+            
+            if not node_recs:
+                logger.info("No offloading candidates found for pressured node", node=node_id)
+                
+                # If critical memory pressure and no process to offload, attempt object spilling
+                if is_critical and resource_type == ResourceType.MEMORY:
+                    await self._spill_registered_objects(node_id)
+                return
+
+            # In critical mode, be more aggressive
+            limit = 5 if is_critical else 2
+            
+            # Execute recommendations
+            for rec in node_recs[:limit]:
+                logger.info(
+                    "Mitigating pressure: Offloading process",
+                    node=node_id,
+                    pid=rec.process.pid,
+                    name=rec.process.name,
+                    target=rec.target_node,
+                    critical=is_critical
+                )
+                await self.execute_offloading(rec)
+                
+            # If still critical after offloading processes, try spilling objects
+            if is_critical and resource_type == ResourceType.MEMORY:
+                await self._spill_registered_objects(node_id)
+                
+        except Exception as e:
+            logger.error("Failed to execute automatic mitigation", node=node_id, error=str(e))
+
+    def register_spillable_object(self, object_id: str, object_ref: ray.ObjectRef, node_id: str) -> None:
+        """Register a Ray object as a candidate for emergency spilling."""
+        self._spillable_objects[object_id] = {
+            "ref": object_ref,
+            "node_id": node_id,
+            "registered_at": datetime.now(UTC)
+        }
+        logger.debug("Registered spillable object", object_id=object_id, node=node_id)
+
+    def unregister_spillable_object(self, object_id: str) -> None:
+        """Unregister an object from spill candidates."""
+        if object_id in self._spillable_objects:
+            del self._spillable_objects[object_id]
+            logger.debug("Unregistered spillable object", object_id=object_id)
+
+    async def _spill_registered_objects(self, node_id: str) -> int:
+        """Emergency spill registered objects for a specific node to free memory."""
+        if not self.distributed_memory_pool:
+            return 0
+            
+        candidates = [
+            (oid, info) for oid, info in self._spillable_objects.items()
+            if info["node_id"] == node_id and oid not in self._spilled_objects
+        ]
+        
+        if not candidates:
+            return 0
+            
+        logger.warning("Emergency object spilling triggered", node=node_id, candidate_count=len(candidates))
+        
+        spilled_count = 0
+        for object_id, info in candidates:
+            try:
+                block_id = await self.distributed_memory_pool.spill_object(info["ref"])
+                if block_id:
+                    self._spilled_objects[object_id] = block_id
+                    spilled_count += 1
+                    logger.info("Object spilled during emergency", object_id=object_id, block_id=block_id)
+            except Exception as e:
+                logger.error("Failed to spill object during emergency", object_id=object_id, error=str(e))
+                
+        return spilled_count
+        
+    async def evacuate_node(self, node_id: str) -> int:
+        """Aggressively offload all possible processes from a node to mitigate emergencies."""
+        if not self.offloading_detector:
+            return 0
+            
+        logger.critical("Starting emergency node evacuation", node=node_id)
+        
+        # 1. Discover all candidates
+        recommendations = await self.offloading_detector.detect_offloading_candidates()
+        node_recs = [r for r in recommendations if r.source_node == node_id]
+        
+        if not node_recs:
+            logger.info("No offloading candidates found for evacuation", node=node_id)
+            return 0
+            
+        # 2. Execute all recommendations (no limit during evacuation)
+        evacuated_count = 0
+        for rec in node_recs:
+            try:
+                logger.info(
+                    "Evacuating process",
+                    node=node_id,
+                    pid=rec.process.pid,
+                    name=rec.process.name,
+                    target=rec.target_node
+                )
+                await self.execute_offloading(rec)
+                evacuated_count += 1
+            except Exception as e:
+                logger.error("Failed to evacuate process", pid=rec.process.pid, error=str(e))
+                
+        # 3. Emergency object spilling
+        if self._spillable_objects:
+            spilled = await self._spill_registered_objects(node_id)
+            logger.info("Emergency objects spilled during evacuation", count=spilled)
+            
+        return evacuated_count
+
     async def _initialize_legacy(self) -> None:
         """Initialize legacy components without resource sharing."""
         self.legacy_executor = OffloadingExecutor(
@@ -170,6 +317,21 @@ class ResourceSharingOrchestrator:
             
         self._running = True
         logger.info("Resource sharing orchestrator started")
+
+    async def run_forever(self) -> None:
+        """Run the orchestrator indefinitely for continuous monitoring and mitigation."""
+        await self.start()
+        
+        logger.info("Orchestrator entering continuous monitoring mode")
+        try:
+            while self._running:
+                # The actual work is done in background tasks (metrics collector loop
+                # and pressure callbacks), so we just wait here.
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.info("Orchestrator continuous monitoring cancelled")
+        finally:
+            await self.stop()
         
     async def stop(self) -> None:
         """Stop the orchestrator."""
@@ -220,6 +382,7 @@ class ResourceSharingOrchestrator:
             "resource_sharing_enabled": self.resource_sharing_enabled,
             "initialized": self._initialized,
             "running": self._running,
+            "memory_watchdog_active": self.memory_watchdog_active,
         }
         
         if self.resource_sharing_enabled:
@@ -345,6 +508,9 @@ class ResourceSharingOrchestrator:
                     "used_gb": snapshot.memory_used / (1024**3),
                     "available_gb": snapshot.memory_available / (1024**3),
                     "percent": snapshot.memory_percent,
+                    "swap_total_gb": snapshot.swap_total / (1024**3),
+                    "swap_used_gb": snapshot.swap_used / (1024**3),
+                    "swap_percent": snapshot.swap_percent,
                 },
                 "gpu": {
                     "total": snapshot.gpu_count,

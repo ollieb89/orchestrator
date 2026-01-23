@@ -144,6 +144,19 @@ class ProcessClassifier:
             r"containerd",
             r"kubelet",
         ],
+        ProcessType.INTERACTIVE: [
+            r"python.*ipython",
+            r"python.*jupyter",
+            r"bash",
+            r"zsh",
+            r"tmux",
+            r"screen",
+            r"vim",
+            r"nano",
+            r"windsurf",
+            r"chrome",
+            r"code",
+        ],
     }
     
     @classmethod
@@ -163,7 +176,7 @@ class ProcessClassifier:
         if process.cpu_percent > 80:
             return ProcessType.COMPUTE_INTENSIVE
         
-        if process.memory_mb > 8192:  # > 8GB
+        if process.memory_mb > 1024:  # > 1GB (Lowered from 8GB)
             return ProcessType.DATA_PROCESSING
         
         return None
@@ -192,6 +205,11 @@ class OffloadingDetector:
         
         # History of offloading decisions
         self._offloading_history: List[OffloadingRecommendation] = []
+
+    async def stop(self) -> None:
+        """Stop the offloading detector."""
+        # No background tasks to stop currently
+        pass
     
     def _create_monitor_script(self) -> str:
         """Create the process monitoring script."""
@@ -199,7 +217,7 @@ class OffloadingDetector:
 import psutil
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 def get_gpu_processes():
     """Get processes using GPU."""
@@ -245,7 +263,7 @@ def get_process_info():
                 "memory_mb": (pinfo['memory_info'].rss / (1024*1024)) if pinfo['memory_info'] else 0,
                 "gpu_memory_mb": gpu_info.get("memory_mb", 0),
                 "user": pinfo['username'] or "",
-                "start_time": datetime.fromtimestamp(pinfo['create_time']).isoformat() if pinfo['create_time'] else None,
+                "start_time": datetime.fromtimestamp(pinfo['create_time'], tz=timezone.utc).isoformat() if pinfo['create_time'] else None,
                 "parent_pid": pinfo['ppid'],
             }
             processes.append(process)
@@ -253,7 +271,7 @@ def get_process_info():
             continue
     
     return {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "processes": processes
     }
 
@@ -329,12 +347,15 @@ if __name__ == "__main__":
         if process.process_type == ProcessType.DAEMON:
             return False, "Daemon/service process"
         
-        # Skip interactive processes
-        if process.process_type == ProcessType.INTERACTIVE:
-            return False, "Interactive process"
+        # Determine if it's a memory-intensive interactive process
+        # We previously skipped all interactive processes, but now we allow them if memory-hungry
+        is_memory_intensive = process.memory_mb > 1024  # > 1GB
+        
+        if process.process_type == ProcessType.INTERACTIVE and not is_memory_intensive:
+            return False, "Interactive process (not memory intensive enough)"
         
         # Skip processes with very low resource usage
-        if process.cpu_percent < 5 and process.memory_mb < 100 and process.gpu_memory_mb == 0:
+        if not is_memory_intensive and process.cpu_percent < 5 and process.gpu_memory_mb == 0:
             return False, "Insufficient resource usage"
         
         # Check if process is long-running
@@ -347,13 +368,13 @@ if __name__ == "__main__":
         if process.gpu_memory_mb > 0:
             return True, "GPU-intensive process"
         
+        # Memory-intensive processes
+        if is_memory_intensive:
+            return True, f"Memory-intensive process ({process.memory_mb}MB)"
+        
         # CPU-intensive processes
         if process.cpu_percent > 50:
             return True, "CPU-intensive process"
-        
-        # Memory-intensive processes
-        if process.memory_mb > 2048:  # > 2GB
-            return True, "Memory-intensive process"
         
         # Training and inference processes
         if process.process_type in [ProcessType.TRAINING, ProcessType.INFERENCE]:
@@ -381,7 +402,7 @@ if __name__ == "__main__":
         
         return requirements
     
-    async def find_offloading_opportunities(
+    async def detect_offloading_candidates(
         self,
         target_node: Optional[str] = None,
     ) -> List[OffloadingRecommendation]:

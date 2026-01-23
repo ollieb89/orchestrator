@@ -383,7 +383,7 @@ class ResourceBoostManager:
         return False
     
     async def _add_ray_resources(self, boost: ResourceBoost) -> None:
-        """Add boosted resources to Ray's resource pool.
+        """Add boosted resources to Ray's resource pool using placement groups.
         
         Args:
             boost: The boost to add to Ray resources
@@ -391,29 +391,35 @@ class ResourceBoostManager:
         # Create a custom resource name for the boost
         resource_name = f"boost_{boost.resource_type.value.lower()}_{boost.boost_id[:8]}"
         
-        # Add the resource to Ray cluster-wide
-        ray.experimental.set_resource(resource_name, boost.amount)
+        # Use placement groups instead of deprecated set_resource API
+        from ray.util.placement_group import placement_group
         
-        # Also add to the target node's specific resource pool if it's a GPU boost
-        if boost.resource_type == ResourceType.GPU:
-            # For GPU boosts, we can create a placement group to ensure resources
-            # are available on the target node
-            from ray.util.placement_group import placement_group
-            import uuid
+        pg_name = f"boost_pg_{boost.boost_id[:8]}"
+        
+        # Validate resource type
+        if boost.resource_type not in [ResourceType.CPU, ResourceType.GPU, ResourceType.MEMORY]:
+            logger.warning(f"Unsupported resource type for Ray placement: {boost.resource_type}")
+            return
+        
+        try:
+            # Create a placement group to reserve resources on target node
+            # Ray placement groups expect a list of bundles
+            if boost.resource_type == ResourceType.MEMORY:
+                # Convert memory to MB for Ray resources
+                memory_mb = int(boost.amount * 1024)  # Convert GB to MB
+                bundles_list = [{"memory": memory_mb}]
+            else:
+                bundles_list = [{boost.resource_type.value.upper(): boost.amount}]
             
-            pg_name = f"boost_pg_{boost.boost_id[:8]}"
-            bundles = {
-                boost.target_node: {f"GPU": boost.amount}
-            }
-            
-            try:
-                # Create a placement group to reserve GPU on target node
-                pg = placement_group(bundles, strategy="STRICT_SPREAD", name=pg_name)
-                ray.get(pg.ready())
-                boost.ray_placement_group = pg_name
-                logger.info(f"Created placement group {pg_name} for GPU boost on {boost.target_node}")
-            except Exception as e:
-                logger.warning(f"Failed to create placement group for GPU boost: {e}")
+            pg = placement_group(bundles_list, strategy="STRICT_SPREAD", name=pg_name)
+            ray.get(pg.ready())
+            boost.ray_placement_group = pg_name
+            logger.info(f"Created placement group {pg_name} for {boost.resource_type.value} boost "
+                       f"({boost.amount}) on {boost.target_node}")
+        except Exception as e:
+            logger.warning(f"Failed to create placement group for boost: {e}")
+            # Don't fail the boost, just log the issue
+            logger.info("Boost is still active but Ray resource scheduling is disabled")
         
         # Track the added resource
         if boost.target_node not in self._boosted_resources:
@@ -429,13 +435,11 @@ class ResourceBoostManager:
         Args:
             boost: The boost to remove from Ray resources
         """
-        # Find and remove the custom resource
+        # Find and remove the custom resource tracking
         target_resources = self._boosted_resources.get(boost.target_node, {})
         
-        for resource_name, amount in target_resources.items():
+        for resource_name, amount in list(target_resources.items()):
             if f"boost_{boost.resource_type.value.lower()}_{boost.boost_id[:8]}" in resource_name:
-                # Remove the resource (set to 0)
-                ray.experimental.set_resource(resource_name, 0)
                 del target_resources[resource_name]
                 break
         

@@ -1202,6 +1202,112 @@ def execute(
 
 
 @cli.group()
+def daemon():
+    """Manage the background orchestrator daemon."""
+    pass
+
+
+@daemon.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, path_type=Path),
+    default=Path("config/my-cluster-enhanced.yaml"),
+    help="Path to cluster configuration file",
+)
+@click.option(
+    "--pid-file",
+    type=click.Path(path_type=Path),
+    default=Path("/tmp/grid_orchestrator.pid"),
+    help="Path to PID file",
+)
+def start(config: Path, pid_file: Path) -> None:
+    """Start the background orchestrator daemon."""
+    setup_logging()
+    
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            import os
+            os.kill(pid, 0)
+            console.print(f"[yellow]Daemon already running with PID {pid}[/yellow]")
+            return
+        except (ProcessLookupError, ValueError):
+            pid_file.unlink()
+
+    async def _run():
+        try:
+            cluster_config = ClusterConfig.from_yaml(config)
+            ssh_manager = SSHManager(cluster_config.nodes)
+            orchestrator = ResourceSharingOrchestrator(cluster_config, ssh_manager)
+            
+            import os
+            pid_file.write_text(str(os.getpid()))
+            console.print(f"[green]✓[/green] Starting orchestrator daemon (PID {os.getpid()})")
+            
+            await orchestrator.initialize()
+            await orchestrator.run_forever()
+        except Exception as e:
+            if pid_file.exists():
+                pid_file.unlink()
+            raise click.ClickException(str(e))
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Daemon stopped by user.[/yellow]")
+    finally:
+        if pid_file.exists():
+            pid_file.unlink()
+
+
+@daemon.command()
+@click.option(
+    "--pid-file",
+    type=click.Path(exists=True, path_type=Path),
+    default=Path("/tmp/grid_orchestrator.pid"),
+    help="Path to PID file",
+)
+def stop(pid_file: Path) -> None:
+    """Stop the background orchestrator daemon."""
+    if not pid_file.exists():
+        console.print("[yellow]Daemon not running (no PID file found).[/yellow]")
+        return
+
+    try:
+        pid = int(pid_file.read_text().strip())
+        import os
+        import signal
+        os.kill(pid, signal.SIGINT)
+        console.print(f"[green]✓[/green] Sent stop signal to daemon (PID {pid})")
+    except (ProcessLookupError, ValueError):
+        console.print("[red]Could not find process or invalid PID file. Cleaning up...[/red]")
+        pid_file.unlink()
+
+
+@daemon.command()
+@click.option(
+    "--pid-file",
+    type=click.Path(exists=True, path_type=Path),
+    default=Path("/tmp/grid_orchestrator.pid"),
+    help="Path to PID file",
+)
+def status(pid_file: Path) -> None:
+    """Check the status of the background orchestrator daemon."""
+    if not pid_file.exists():
+        console.print("Daemon: [bold red]Stopped[/bold red]")
+        return
+
+    try:
+        pid = int(pid_file.read_text().strip())
+        import os
+        os.kill(pid, 0)
+        console.print(f"Daemon: [bold green]Running[/bold green] (PID {pid})")
+    except (ProcessLookupError, ValueError):
+        console.print("Daemon: [bold red]Stale PID file found (process not running)[/bold red]")
+
+
+@cli.group()
 def resource_sharing():
     """Intelligent resource sharing commands."""
     pass
@@ -1229,9 +1335,12 @@ def status(config: Path) -> None:
             status = await orchestrator.get_cluster_status()
             
             # Overall Status
-            console.print("\n[bold]Resource Sharing Orchestrator Status[/bold]")
-            console.print(f"Sharing Enabled: {'[green]Yes[/green]' if status['resource_sharing_enabled'] else '[red]No[/red]'}")
-            console.print(f"Initialized: {'[green]Yes[/green]' if status['initialized'] else '[red]No[/red]'}")
+            console.print("\n[bold]Resource Sharing Status Summary[/bold]")
+            console.print(f"Sharing Enabled: {'Yes' if status.get('resource_sharing_enabled') else 'No'}")
+            console.print(f"Initialized: {'Yes' if status.get('initialized') else 'No'}")
+            watchdog_status = status.get('memory_watchdog_active')
+            if watchdog_status is not None:
+                console.print(f"Memory Watchdog: [bold {'green' if watchdog_status else 'red'}]{'Active' if watchdog_status else 'Inactive'}[/]")
             
             if status.get("resource_sharing"):
                 sharing = status["resource_sharing"]
@@ -1349,23 +1458,24 @@ def status(config: Path) -> None:
                     util_table.add_column("Node")
                     util_table.add_column("CPU", justify="right")
                     util_table.add_column("Memory", justify="right")
+                    util_table.add_column("Swap", justify="right")
+                    util_table.add_column("Pressure", justify="right")
                     util_table.add_column("GPU", justify="right")
 
-                    for node in sorted(snapshots.keys()):
-                        s = snapshots[node] or {}
-                        cpu_pct = s.get("cpu_percent")
-                        mem_pct = s.get("memory_percent")
-                        gpu_used = s.get("gpu_used")
-                        gpu_count = s.get("gpu_count")
-
-                        cpu_text = _fmt_percent(cpu_pct) if cpu_pct is not None else "-"
-                        mem_text = _fmt_percent(mem_pct) if mem_pct is not None else "-"
-                        if gpu_used is not None and gpu_count is not None:
-                            gpu_text = f"{int(gpu_used)}/{int(gpu_count)}"
-                        else:
-                            gpu_text = "-"
-
-                        util_table.add_row(str(node), cpu_text, mem_text, gpu_text)
+                    for node_id, snap in snapshots.items():
+                        # Calculate memory pressure score matching ResourceSnapshot.memory_pressure property
+                        mem_p = float(snap.get("memory_percent", 0)) / 100.0
+                        swap_p = float(snap.get("swap_percent", 0)) / 100.0
+                        pressure_score = min(1.0, mem_p + (swap_p * 0.2)) * 100.0
+                        
+                        util_table.add_row(
+                            node_id,
+                            _fmt_percent(snap.get("cpu_percent")),
+                            _fmt_percent(snap.get("memory_percent")),
+                            _fmt_percent(snap.get("swap_percent", 0)),
+                            _fmt_percent(pressure_score),
+                            f"{snap.get('gpu_used', 0)}/{snap.get('gpu_count', 0)}"
+                        )
 
                     console.print(util_table)
 
@@ -1437,6 +1547,45 @@ def release(allocation_id: str, config: Path) -> None:
             console.print(f"[red]Error: {e}[/red]")
 
     asyncio.run(_release())
+
+
+@resource_sharing.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, path_type=Path),
+    default=Path("config/my-cluster-enhanced.yaml"),
+    help="Path to cluster configuration file",
+)
+def cooldown(config: Path) -> None:
+    """Emergency evacuation of master node to reduce heat and load."""
+    setup_logging()
+    console.print("[bold red]Starting emergency master node cooldown...[/bold red]")
+
+    async def _cooldown():
+        try:
+            cluster_config = ClusterConfig.from_yaml(config)
+            ssh_manager = SSHManager(cluster_config.nodes)
+            orchestrator = ResourceSharingOrchestrator(cluster_config, ssh_manager)
+            
+            await orchestrator.initialize()
+            
+            # Evacuate master node
+            count = await orchestrator.evacuate_node("gpu-master")
+            
+            if count > 0:
+                console.print(f"[green]✓[/green] Successfully evacuated {count} processes to worker nodes.")
+                console.print("[yellow]Master node load should begin to decrease shortly.[/yellow]")
+            else:
+                console.print("[yellow]No offloading candidates found on master node.[/yellow]")
+            
+            await orchestrator.stop()
+            await ssh_manager.close_all()
+        except Exception as e:
+            console.print(f"[red]Cooldown failed: {e}[/red]")
+            raise click.ClickException(str(e))
+
+    asyncio.run(_cooldown())
 
 
 @memory.command()

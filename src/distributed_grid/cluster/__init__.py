@@ -27,16 +27,19 @@ class RayClusterManager:
         self.venv_path = "~/distributed_cluster_env"
         self.ray_bin = f"{self.venv_path}/bin/ray"
         self.python_bin = f"{self.venv_path}/bin/python"
-        
+        self.base_python = "python3.11"
+
     async def install_ray(
         self,
         ray_version: str = "latest",
-        additional_packages: List[str] | None = None
+        additional_packages: List[str] | None = None,
+        python_executable: str = "python3.11"
     ) -> None:
         """Install Ray and dependencies on all nodes."""
+        self.base_python = python_executable
         additional_packages = additional_packages or ["torch", "numpy"]
         
-        console.print("[blue]Installing Ray on all nodes...[/blue]")
+        console.print(f"[blue]Installing Ray on all nodes using {python_executable}...[/blue]")
         await self.ssh_manager.initialize()
         
         try:
@@ -71,11 +74,11 @@ class RayClusterManager:
         additional_packages: List[str]
     ) -> None:
         """Install Ray on a specific node."""
-        logger.info("Installing Ray on node", node=node.name)
+        logger.info("Installing Ray on node", node=node.name, python=self.base_python)
         
-        # Create virtual environment
+        # Create virtual environment using the specified base python
         setup_cmd = (
-            f"python3 -m venv {self.venv_path} && "
+            f"{self.base_python} -m venv --clear {self.venv_path} && "
             f"{self.venv_path}/bin/pip install -U pip"
         )
         
@@ -105,11 +108,17 @@ class RayClusterManager:
             
             # Start head node
             head_ip = await self._get_node_ip(head_node)
-            await self._start_head_node(head_node, head_ip, port, dashboard_port)
+            try:
+                await self._start_head_node(head_node, head_ip, port, dashboard_port)
+                console.print(f"[green]Head node started at {head_ip}:{port}[/green]")
+            except RuntimeError as e:
+                # Handle case where head node is already running
+                if "already running" in str(e).lower() or "ConnectionError" in str(e):
+                    console.print(f"[yellow]Head node already running at {head_ip}:{port}. Proceeding with workers.[/yellow]")
+                else:
+                    raise
 
             redis_address = f"{head_ip}:{port}"
-            
-            console.print(f"[green]Head node started at {redis_address}[/green]")
             
             # Wait for head node to be fully ready
             console.print("[blue]Waiting for head node to be fully ready...[/blue]")

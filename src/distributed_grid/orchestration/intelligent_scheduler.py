@@ -119,6 +119,7 @@ class IntelligentScheduler:
         resource_sharing_manager: ResourceSharingManager,
         default_strategy: SchedulingStrategy = SchedulingStrategy.BEST_FIT,
         prediction_window: timedelta = timedelta(minutes=15),
+        load_threshold: float = 20.0,
     ):
         """Initialize the intelligent scheduler."""
         self.cluster_config = cluster_config
@@ -126,6 +127,7 @@ class IntelligentScheduler:
         self.resource_sharing_manager = resource_sharing_manager
         self.default_strategy = default_strategy
         self.prediction_window = prediction_window
+        self.load_threshold = load_threshold
         
         # Scheduling state
         self._pending_requests: List[SchedulingRequest] = []
@@ -235,7 +237,18 @@ class IntelligentScheduler:
         requirements: ResourceRequirement,
     ) -> bool:
         """Check if a node meets task requirements."""
-        # CPU requirement
+        # 1. Load Average Protection (Master Node specific)
+        # If load average is extremely high, reject new tasks to prevent freezing
+        if snapshot.node_id == "gpu-master" and snapshot.load_avg[0] > self.load_threshold:
+            logger.warning(
+                "Rejecting task placement on master due to high load average",
+                node=snapshot.node_id,
+                load_avg=snapshot.load_avg[0],
+                threshold=self.load_threshold
+            )
+            return False
+
+        # 2. CPU requirement
         if snapshot.cpu_available < requirements.cpu_count:
             return False
             
@@ -555,7 +568,7 @@ class IntelligentScheduler:
                 await self.resource_sharing_manager.request_resource(
                     node_id="master",
                     resource_type=ResourceType.MEMORY,
-                    amount=request.requirements.memory_mb * 1024 * 1024,
+                    amount=request.requirements.memory_mb / 1024.0,  # Convert MB to GB
                     priority=AllocationPriority.HIGH if request.is_urgent else AllocationPriority.NORMAL,
                 )
                 

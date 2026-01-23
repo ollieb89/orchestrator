@@ -7,8 +7,8 @@ execution:
   # Resource sharing configuration
   resource_sharing:
     enabled: true
-    mode: dynamic_balancing  # offload_only, share_and_offload, dynamic_balancing
-    policy: balanced  # conservative, balanced, aggressive, predictive
+    mode: offload_only  # offload_only, share_and_offload, dynamic_balancing
+    policy: aggressive  # conservative, balanced, aggressive, predictive
     rebalance_interval_seconds: 30
     allocation_timeout_minutes: 10
     monitoring_interval_seconds: 10
@@ -44,9 +44,9 @@ nodes:
   user: ollie
   # Resource sharing settings per node
   resource_sharing:
-    can_share: true
+    can_share: false
     max_share_cpu: 4  # Max CPUs to share
-    max_share_memory_gb: 16  # Max memory to share
+    max_share_memory_gb: 0  # Max memory to share
     max_share_gpu: 0  # Master doesn't share GPUs by default
     priority: 1.0
 - cpu_count: 6
@@ -63,7 +63,7 @@ nodes:
   user: ob
   resource_sharing:
     can_share: true
-    max_share_cpu: 3
+    max_share_cpu: 8
     max_share_memory_gb: 8
     max_share_gpu: 1
     priority: 0.8
@@ -81,7 +81,7 @@ nodes:
   user: ollie
   resource_sharing:
     can_share: true
-    max_share_cpu: 4
+    max_share_cpu: 12
     max_share_memory_gb: 16
     max_share_gpu: 1
     priority: 0.9

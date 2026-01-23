@@ -383,7 +383,7 @@ class EnhancedOffloadingExecutor:
                     memory_id = await self.resource_sharing_manager.request_resource(
                         node_id="gpu-master",
                         resource_type=ResourceType.MEMORY,
-                        amount=analysis.memory_requirement_mb * 1024 * 1024,
+                        amount=analysis.memory_requirement_mb / 1024.0,  # Convert MB to GB
                         priority=AllocationPriority.NORMAL,
                         duration=timedelta(hours=1),
                     )
@@ -437,10 +437,48 @@ class EnhancedOffloadingExecutor:
         recommendation: OffloadingRecommendation,
         runtime_env: Optional[Dict],
     ) -> Dict[str, Any]:
-        """Execute using original offloading approach."""
-        # Use the original offloading logic
-        # This would be similar to the original OffloadingExecutor
-        return {"type": "ray_job", "job_id": f"job_{task_id}"}
+        """Execute using original offloading approach with actual Ray job submission."""
+        if not self._job_client:
+            self._job_client = JobSubmissionClient(self.ray_dashboard_address)
+
+        # Prepare command and resources
+        command = " ".join(recommendation.process.cmdline)
+        
+        # Map target node to IP for resource pinning
+        target_ip = self._get_node_ip(recommendation.target_node)
+        entrypoint_resources = {f"node:{target_ip}": 0.01}
+        
+        # Combine runtime env
+        full_runtime_env = runtime_env or {}
+        full_runtime_env.update({
+            "env_vars": {
+                "OFFLOADING_TASK_ID": task_id,
+                "EXECUTION_MODE": "offload_only"
+            }
+        })
+
+        try:
+            # Submit actual job to Ray
+            job_id = self._job_client.submit_job(
+                entrypoint=command,
+                submission_id=f"job_{task_id}",
+                runtime_env=full_runtime_env,
+                entrypoint_resources=entrypoint_resources,
+            )
+            
+            logger.info(
+                "Ray job submitted successfully",
+                task_id=task_id,
+                job_id=job_id,
+                target=recommendation.target_node,
+                command=command[:50] + "..." if len(command) > 50 else command
+            )
+            
+            return {"type": "ray_job", "job_id": job_id}
+            
+        except Exception as e:
+            logger.error("Failed to submit Ray job", task_id=task_id, error=str(e))
+            raise
         
     async def _execute_on_master(
         self,
@@ -558,14 +596,25 @@ class EnhancedOffloadingExecutor:
             await self._fail_task(task_id, str(e))
             
     async def _monitor_ray_job(self, task_id: str, job_id: str) -> None:
-        """Monitor a Ray job."""
+        """Monitor a Ray job with retry logic for propagation delay."""
         if not self._job_client:
             return
             
+        retry_count = 0
+        max_retries = 3
+        
         try:
             while True:
-                job_status = self._job_client.get_job_status(job_id)
-                
+                try:
+                    job_status = self._job_client.get_job_status(job_id)
+                except Exception as e:
+                    if "404" in str(e) and retry_count < max_retries:
+                        retry_count += 1
+                        logger.warning("Job not yet found, retrying...", job_id=job_id, retry=retry_count)
+                        await asyncio.sleep(2)
+                        continue
+                    raise
+
                 if job_status in {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.STOPPED}:
                     if job_status == JobStatus.SUCCEEDED:
                         await self._complete_task(task_id, {"status": "completed"})

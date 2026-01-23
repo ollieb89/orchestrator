@@ -50,6 +50,10 @@ class ResourceSnapshot:
     gpu_memory_total: int
     gpu_memory_used: int
     gpu_memory_available: int
+    load_avg: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    swap_total: int = 0
+    swap_used: int = 0
+    swap_percent: float = 0.0
     custom_resources: Dict[str, Tuple[int, int]] = field(default_factory=dict)
     
     @property
@@ -60,7 +64,11 @@ class ResourceSnapshot:
     @property
     def memory_pressure(self) -> float:
         """Calculate memory pressure score (0-1)."""
-        return self.memory_percent / 100.0
+        # Incorporate swap usage into memory pressure calculation
+        # If swap is being used significantly, memory pressure is higher
+        base_pressure = self.memory_percent / 100.0
+        swap_penalty = (self.swap_percent / 100.0) * 0.2  # Up to 20% increase based on swap
+        return min(1.0, base_pressure + swap_penalty)
     
     @property
     def gpu_pressure(self) -> float:
@@ -123,7 +131,16 @@ class ResourceMetricsCollector:
         # Ray resources
         self._ray_cluster_resources = {}
         self._available_resources = {}
-        
+
+        # Callbacks for resource pressure events
+        self._pressure_callbacks: List[Callable[[str, ResourceType, float], Any]] = []
+        self._memory_threshold_high = 0.85  # Default high threshold
+        self._cpu_threshold_high = 0.85     # Default high threshold
+    
+    def register_pressure_callback(self, callback: Callable[[str, ResourceType, float], Any]) -> None:
+        """Register a callback for resource pressure events."""
+        self._pressure_callbacks.append(callback)
+
     async def start(self) -> None:
         """Start resource monitoring."""
         if self._running:
@@ -166,7 +183,7 @@ class ResourceMetricsCollector:
             except Exception as e:
                 logger.error("Error in monitoring loop", error=str(e))
                 await asyncio.sleep(5)
-                
+
     async def _collect_all_metrics(self) -> None:
         """Collect metrics from all nodes in the cluster."""
         # Get Ray cluster resources
@@ -192,6 +209,13 @@ class ResourceMetricsCollector:
             # Store snapshot
             self._latest_snapshot[node_id] = snapshot
             
+            # Check for pressure events
+            if snapshot.memory_pressure > self._memory_threshold_high:
+                self._trigger_pressure_event(node_id, ResourceType.MEMORY, snapshot.memory_pressure)
+            
+            if snapshot.cpu_pressure > self._cpu_threshold_high:
+                self._trigger_pressure_event(node_id, ResourceType.CPU, snapshot.cpu_pressure)
+            
             # Update history
             if node_id not in self._resource_history:
                 self._resource_history[node_id] = []
@@ -201,6 +225,17 @@ class ResourceMetricsCollector:
             # Trim history
             if len(self._resource_history[node_id]) > self.history_size:
                 self._resource_history[node_id] = self._resource_history[node_id][-self.history_size:]
+
+    def _trigger_pressure_event(self, node_id: str, resource_type: ResourceType, pressure: float) -> None:
+        """Trigger pressure callbacks."""
+        for callback in self._pressure_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(node_id, resource_type, pressure))
+                else:
+                    callback(node_id, resource_type, pressure)
+            except Exception as e:
+                logger.error("Error in pressure callback", error=str(e))
                 
     async def _collect_node_metrics(
         self,
@@ -250,6 +285,11 @@ class ResourceMetricsCollector:
                 "mem_available=int(next(l.split()[1] for l in mem_lines if l.startswith('MemAvailable:')))*1024; "
                 "mem_used=max(0, mem_total-mem_available); "
                 "mem_percent=(float(mem_used)/float(mem_total)*100.0) if mem_total>0 else 0.0; "
+                "swap_lines=open('/proc/meminfo','r').read().splitlines(); "
+                "swap_total=int(next(l.split()[1] for l in swap_lines if l.startswith('SwapTotal:')))*1024; "
+                "swap_free=int(next(l.split()[1] for l in swap_lines if l.startswith('SwapFree:')))*1024; "
+                "swap_used=max(0, swap_total-swap_free); "
+                "swap_percent=(float(swap_used)/float(swap_total)*100.0) if swap_total>0 else 0.0; "
                 "out={"
                 "  'cpu_count': int(cpu_count),"
                 "  'cpu_used': float(cpu_used),"
@@ -258,7 +298,11 @@ class ResourceMetricsCollector:
                 "  'memory_total': int(mem_total),"
                 "  'memory_used': int(mem_used),"
                 "  'memory_available': int(mem_available),"
-                "  'memory_percent': float(mem_percent)"
+                "  'memory_percent': float(mem_percent),"
+                "  'swap_total': int(swap_total),"
+                "  'swap_used': int(swap_used),"
+                "  'swap_percent': float(swap_percent),"
+                "  'load_avg': os.getloadavg()"
                 "}; "
                 "print(json.dumps(out))"
                 "\""
@@ -329,6 +373,10 @@ class ResourceMetricsCollector:
                 gpu_memory_total=int(gpu_memory_total_bytes),
                 gpu_memory_used=int(gpu_memory_used_bytes),
                 gpu_memory_available=int(gpu_memory_available_bytes),
+                swap_total=int(data.get("swap_total", 0)),
+                swap_used=int(data.get("swap_used", 0)),
+                swap_percent=float(data.get("swap_percent", 0.0)),
+                load_avg=tuple(data.get("load_avg", (0.0, 0.0, 0.0))),
             )
         except Exception as e:
             logger.warning("SSH metrics probe exception", node=node_config.name, error=str(e))
@@ -348,6 +396,18 @@ class ResourceMetricsCollector:
         memory_used = memory.used
         memory_available = memory.available
         memory_percent = memory.percent
+        
+        # Swap metrics
+        swap = psutil.swap_memory()
+        swap_total = swap.total
+        swap_used = swap.used
+        swap_percent = swap.percent
+        
+        # Load average
+        try:
+            load_avg = psutil.getloadavg()
+        except Exception:
+            load_avg = (0.0, 0.0, 0.0)
         
         # GPU metrics (if nvidia-smi is available)
         gpu_count = node_config.gpu_count
@@ -388,6 +448,10 @@ class ResourceMetricsCollector:
             gpu_memory_total=gpu_memory_total,
             gpu_memory_used=gpu_memory_used,
             gpu_memory_available=gpu_memory_available,
+            load_avg=load_avg,
+            swap_total=swap_total,
+            swap_used=swap_used,
+            swap_percent=swap_percent,
         )
         
     def _collect_ray_node_metrics(
@@ -439,6 +503,9 @@ class ResourceMetricsCollector:
             gpu_memory_total=gpu_memory_total,
             gpu_memory_used=gpu_memory_used,
             gpu_memory_available=gpu_memory_available,
+            swap_total=0,
+            swap_used=0,
+            swap_percent=0.0,
         )
         
     def _get_configured_metrics(self, node_config: NodeConfig) -> ResourceSnapshot:
@@ -464,6 +531,9 @@ class ResourceMetricsCollector:
             gpu_memory_total=node_config.gpu_count * 16 * 1024 * 1024 * 1024,
             gpu_memory_used=0,
             gpu_memory_available=node_config.gpu_count * 16 * 1024 * 1024 * 1024,
+            swap_total=0,
+            swap_used=0,
+            swap_percent=0.0,
         )
         
     def get_latest_snapshot(self, node_id: str) -> Optional[ResourceSnapshot]:

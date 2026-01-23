@@ -1,0 +1,14 @@
+[Unit]
+Description=Distributed Grid Orchestrator Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=ollie
+WorkingDirectory=/home/ollie/Development/Tools/cli_tools/orchestrator
+ExecStart=/home/ollie/.cache/pypoetry/virtualenvs/distributed-grid-WRbpjtA7-py3.11/bin/python -m distributed_grid.cli daemon start --config config/my-cluster-enhanced.yaml
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
