@@ -38,6 +38,8 @@ class SchedulingStrategy(str, Enum):
     LOAD_BALANCED = "load_balanced"  # Distribute tasks evenly
     COST_OPTIMIZED = "cost_optimized"  # Minimize resource cost
     PERFORMANCE_OPTIMIZED = "performance_optimized"  # Maximize performance
+    SPREAD = "spread"  # Spread tasks across all available nodes
+    NODE_SPECIFIC = "node_specific"  # Place on specific nodes
 
 
 class TaskPriority(int, Enum):
@@ -275,6 +277,10 @@ class IntelligentScheduler:
             return self._select_cost_optimized(request, eligible_nodes, snapshots)
         elif request.strategy == SchedulingStrategy.PERFORMANCE_OPTIMIZED:
             return self._select_performance_optimized(request, eligible_nodes, snapshots)
+        elif request.strategy == SchedulingStrategy.SPREAD:
+            return self._select_spread(request, eligible_nodes, snapshots)
+        elif request.strategy == SchedulingStrategy.NODE_SPECIFIC:
+            return self._select_node_specific(request, eligible_nodes)
         else:
             return self._select_best_fit(request, eligible_nodes, snapshots)
             
@@ -375,6 +381,54 @@ class IntelligentScheduler:
                 
         return best_node or eligible_nodes[0]
         
+    def _select_spread(
+        self,
+        request: SchedulingRequest,
+        eligible_nodes: List[str],
+        snapshots: Dict[str, ResourceSnapshot],
+    ) -> str:
+        """Select node to spread tasks across all available nodes."""
+        # Round-robin selection for spread strategy
+        # Track task count per node in active tasks
+        task_counts = {node_id: 0 for node_id in eligible_nodes}
+        
+        for task_id, decision in self._active_tasks.items():
+            if decision.node_id in task_counts:
+                task_counts[decision.node_id] += 1
+                
+        # Select node with fewest tasks
+        selected_node = min(task_counts.items(), key=lambda x: x[1])[0]
+        return selected_node
+        
+    def _select_node_specific(
+        self,
+        request: SchedulingRequest,
+        eligible_nodes: List[str],
+    ) -> str:
+        """Select specific node based on request preferences."""
+        # Check if a specific node is requested
+        preferred_node = request.preferences.get("target_node")
+        if preferred_node and preferred_node in eligible_nodes:
+            return preferred_node
+            
+        # Check for node constraints in preferences
+        node_constraints = request.preferences.get("node_constraints", {})
+        if node_constraints:
+            for node_id in eligible_nodes:
+                capabilities = self._node_capabilities.get(node_id, {})
+                matches = True
+                
+                for key, value in node_constraints.items():
+                    if capabilities.get(key) != value:
+                        matches = False
+                        break
+                        
+                if matches:
+                    return node_id
+                    
+        # Fall back to first eligible node
+        return eligible_nodes[0] if eligible_nodes else ""
+        
     async def _create_scheduling_decision(
         self,
         request: SchedulingRequest,
@@ -410,9 +464,17 @@ class IntelligentScheduler:
         try:
             bundles = [request.requirements.to_ray_resources()]
             
+            # Choose placement strategy based on scheduling strategy
+            if request.strategy == SchedulingStrategy.SPREAD:
+                strategy = "STRICT_SPREAD"
+            elif request.strategy == SchedulingStrategy.LOAD_BALANCED:
+                strategy = "SPREAD"
+            else:
+                strategy = "PACK"  # Default to PACK for other strategies
+            
             pg = placement_group(
                 bundles,
-                strategy="STRICT_SPREAD",
+                strategy=strategy,
                 name=f"task_{request.task_id}",
             )
             

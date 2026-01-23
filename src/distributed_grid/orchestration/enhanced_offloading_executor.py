@@ -460,10 +460,23 @@ class EnhancedOffloadingExecutor:
                 placement_group_bundle_index=0,
             )
         else:
-            remote_fn = execute_process.options(
-                num_cpus=task_info["resource_analysis"].cpu_requirement,
-                num_gpus=task_info["resource_analysis"].gpu_requirement,
-            )
+            # Apply scheduling strategy based on decision
+            scheduling_options = {
+                "num_cpus": task_info["resource_analysis"].cpu_requirement,
+                "num_gpus": task_info["resource_analysis"].gpu_requirement,
+            }
+            
+            # Add scheduling strategy for spreading tasks
+            if task_info.get("spread_tasks", False):
+                scheduling_options["scheduling_strategy"] = "SPREAD"
+            
+            # Add node-specific placement if target node is specified
+            if decision.target_node and decision.target_node != "gpu-master":
+                # Map node names to Ray node resources
+                node_resource = f"node:{self._get_node_ip(decision.target_node)}"
+                scheduling_options["resources"] = {node_resource: 0.001}
+            
+            remote_fn = execute_process.options(**scheduling_options)
             
         # Submit task
         future = remote_fn.remote(command, env_vars)
@@ -624,3 +637,14 @@ class EnhancedOffloadingExecutor:
             stats["scheduler"] = self.intelligent_scheduler.get_scheduling_status()
             
         return stats
+        
+    def _get_node_ip(self, node_name: str) -> str:
+        """Get the IP address for a node name."""
+        # Map node names to their IP addresses based on cluster config
+        node_ip_map = {
+            "gpu-master": "192.168.1.100",
+            "gpu1": "192.168.1.101", 
+            "gpu2": "192.168.1.102",
+            "ml-server": "192.168.1.102",
+        }
+        return node_ip_map.get(node_name, node_name)

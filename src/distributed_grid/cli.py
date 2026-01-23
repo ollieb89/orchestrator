@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import click
 from pydantic import ValidationError
@@ -1315,6 +1315,197 @@ def monitor(config: Path, interval: int, duration: Optional[int], auto_heal: boo
     monitor.alert_threshold = alert_threshold
     
     asyncio.run(monitor.start_monitoring(interval, duration, auto_heal))
+
+
+@cli.group()
+def distribute():
+    """Task distribution commands."""
+    pass
+
+
+@distribute.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(path_type=Path),
+    default=Path("config/my-cluster.yaml"),
+    help="Path to cluster configuration file",
+)
+@click.option(
+    "--strategy",
+    "-s",
+    type=click.Choice(["spread", "load_balanced", "performance_optimized", "node_specific"], case_sensitive=False),
+    default="spread",
+    help="Scheduling strategy to use",
+)
+@click.option(
+    "--tasks",
+    "-t",
+    type=int,
+    default=10,
+    help="Number of tasks to submit",
+)
+@click.option(
+    "--node",
+    "-n",
+    type=str,
+    help="Target node for node_specific strategy",
+)
+def test(config: Path, strategy: str, tasks: int, node: Optional[str]) -> None:
+    """Test task distribution strategies."""
+    setup_logging()
+    
+    async def _test():
+        import ray
+        
+        # Initialize Ray
+        ray.init(address="ray://192.168.1.100:10001")
+        
+        try:
+            # Create a simple test task
+            @ray.remote
+            def test_task(task_id: int) -> Dict[str, Any]:
+                import socket
+                import time
+                
+                node_ip = socket.gethostbyname(socket.gethostname())
+                start_time = time.time()
+                
+                # Simulate work
+                result = sum(i * i for i in range(100000))
+                
+                return {
+                    "task_id": task_id,
+                    "node_ip": node_ip,
+                    "execution_time": time.time() - start_time,
+                    "result": result,
+                }
+            
+            # Submit tasks with chosen strategy
+            refs = []
+            
+            for i in range(tasks):
+                if strategy == "spread":
+                    remote_fn = test_task.options(scheduling_strategy="SPREAD")
+                elif strategy == "node_specific" and node:
+                    # Map node name to IP
+                    node_ip_map = {
+                        "gpu-master": "192.168.1.100",
+                        "gpu1": "192.168.1.101",
+                        "gpu2": "192.168.1.102",
+                        "ml-server": "192.168.1.102",
+                    }
+                    target_ip = node_ip_map.get(node, node)
+                    remote_fn = test_task.options(resources={f"node:{target_ip}": 0.001})
+                else:
+                    remote_fn = test_task.options()
+                
+                refs.append(remote_fn.remote(i))
+            
+            # Wait for completion
+            console.print(f"[cyan]Submitting {tasks} tasks with {strategy} strategy...[/cyan]")
+            results = ray.get(refs)
+            
+            # Analyze distribution
+            node_counts = {}
+            total_time = 0
+            
+            for result in results:
+                node_ip = result["node_ip"]
+                node_counts[node_ip] = node_counts.get(node_ip, 0) + 1
+                total_time += result["execution_time"]
+            
+            # Display results
+            console.print(f"\n[green]Task Distribution Results:[/green]")
+            console.print(f"Strategy: {strategy}")
+            console.print(f"Total tasks: {tasks}")
+            console.print(f"Average execution time: {total_time/tasks:.4f}s\n")
+            
+            distribution_table = Table()
+            distribution_table.add_column("Node IP", justify="left")
+            distribution_table.add_column("Tasks", justify="right")
+            distribution_table.add_column("Percentage", justify="right")
+            
+            for node_ip, count in sorted(node_counts.items()):
+                percentage = (count / tasks) * 100
+                distribution_table.add_row(node_ip, str(count), f"{percentage:.1f}%")
+            
+            console.print(distribution_table)
+            
+        finally:
+            ray.shutdown()
+    
+    asyncio.run(_test())
+
+
+@distribute.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(path_type=Path),
+    default=Path("config/my-cluster-enhanced.yaml"),
+    help="Path to cluster configuration file",
+)
+def status(config: Path) -> None:
+    """Show current task distribution status."""
+    setup_logging()
+    
+    async def _show_status():
+        import ray
+        
+        # Initialize Ray
+        ray.init(address="ray://192.168.1.100:10001")
+        
+        try:
+            # Get cluster status
+            nodes = ray.nodes()
+            
+            console.print("[green]Ray Cluster Status:[/green]\n")
+            
+            status_table = Table()
+            status_table.add_column("Node", justify="left")
+            status_table.add_column("Status", justify="center")
+            status_table.add_column("CPUs", justify="right")
+            status_table.add_column("GPUs", justify="right")
+            status_table.add_column("Memory", justify="right")
+            status_table.add_column("Active Tasks", justify="right")
+            
+            for node in nodes:
+                node_ip = node.get("NodeManagerAddress", "Unknown")
+                node_state = "Alive" if node.get("Alive", False) else "Dead"
+                
+                resources = node.get("Resources", {})
+                cpus = resources.get("CPU", 0)
+                gpus = resources.get("GPU", 0)
+                memory = resources.get("memory", 0)
+                
+                # Convert memory to GB
+                memory_gb = memory / (1024**3) if memory > 0 else 0
+                
+                # Get active tasks count (approximate)
+                active_tasks = len(ray.cluster_resources())
+                
+                status_table.add_row(
+                    node_ip,
+                    f"[green]{node_state}[/green]" if node_state == "Alive" else f"[red]{node_state}[/red]",
+                    str(cpus),
+                    str(gpus),
+                    f"{memory_gb:.1f}GB",
+                    str(active_tasks),
+                )
+            
+            console.print(status_table)
+            
+            # Show distribution tips
+            console.print("\n[yellow]Distribution Tips:[/yellow]")
+            console.print("• Use 'grid distribute test --strategy spread' to distribute tasks evenly")
+            console.print("• Use 'grid distribute test --strategy node_specific --node gpu1' to target a specific node")
+            console.print("• GPU tasks will automatically be placed on nodes with available GPUs")
+            
+        finally:
+            ray.shutdown()
+    
+    asyncio.run(_show_status())
 
 
 def main() -> None:
