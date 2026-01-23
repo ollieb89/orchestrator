@@ -15,7 +15,7 @@ execution:
     thresholds:
       cpu_pressure_high: 0.8
       cpu_pressure_low: 0.3
-      memory_pressure_high: 0.8
+      memory_pressure_high: 0.7  # Lowered from 0.8 to trigger earlier
       memory_pressure_low: 0.3
       gpu_pressure_high: 0.8
       gpu_pressure_low: 0.3

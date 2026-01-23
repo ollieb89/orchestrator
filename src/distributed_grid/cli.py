@@ -1114,6 +1114,163 @@ def release(allocation_id: str, config: Path) -> None:
     asyncio.run(_release())
 
 
+@cli.group()
+def memory():
+    """Distributed memory pool commands."""
+    pass
+
+
+@memory.command()
+@click.option("--size", "-s", type=float, required=True, help="Size in GB to allocate")
+@click.option("--node", "-n", help="Preferred node for allocation (optional)")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def allocate(size: float, node: str | None, config: Path) -> None:
+    """Allocate distributed memory block."""
+    setup_logging()
+
+    async def _allocate():
+        try:
+            import ray
+            from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            
+            # Initialize Ray if not already done
+            if not ray.is_initialized():
+                ray.init(address="auto")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            pool = DistributedMemoryPool(cluster_config)
+            await pool.initialize()
+            
+            size_bytes = int(size * 1024**3)
+            block_id = await pool.allocate(size_bytes, preferred_node=node)
+            
+            if block_id:
+                console.print(f"[green]✓[/green] Allocated {size:.2f} GB")
+                console.print(f"Block ID: [bold]{block_id}[/bold]")
+                if node:
+                    console.print(f"Node: {node}")
+            else:
+                console.print(f"[red]✗[/red] Failed to allocate memory")
+            
+            await pool.shutdown()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
+
+    asyncio.run(_allocate())
+
+
+@memory.command()
+@click.argument("block_id")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def deallocate(block_id: str, config: Path) -> None:
+    """Deallocate distributed memory block."""
+    setup_logging()
+
+    async def _deallocate():
+        try:
+            from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            pool = DistributedMemoryPool(cluster_config)
+            await pool.initialize()
+            
+            success = await pool.deallocate(block_id)
+            
+            if success:
+                console.print(f"[green]✓[/green] Deallocated block: {block_id}")
+            else:
+                console.print(f"[red]✗[/red] Failed to deallocate block: {block_id}")
+            
+            await pool.shutdown()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+
+    asyncio.run(_deallocate())
+
+
+@memory.command()
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def stats(config: Path) -> None:
+    """Show distributed memory pool statistics."""
+    setup_logging()
+
+    async def _stats():
+        try:
+            from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            from rich.table import Table
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            pool = DistributedMemoryPool(cluster_config)
+            await pool.initialize()
+            
+            stats = await pool.get_stats()
+            
+            console.print("\n[bold]Distributed Memory Pool Statistics[/bold]")
+            console.print(f"Total Blocks: {stats['total_blocks']}")
+            
+            # Node statistics table
+            table = Table(title="\nNode Memory Usage")
+            table.add_column("Node", style="cyan")
+            table.add_column("Blocks", justify="right")
+            table.add_column("Total Memory", justify="right")
+            
+            for node_id, node_stats in stats['nodes'].items():
+                table.add_row(
+                    node_id,
+                    str(node_stats['blocks_count']),
+                    f"{node_stats['total_mb']:.2f} MB"
+                )
+            
+            console.print(table)
+            
+            await pool.shutdown()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+
+    asyncio.run(_stats())
+
+
+@memory.command()
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def list_blocks(config: Path) -> None:
+    """List all allocated memory blocks."""
+    setup_logging()
+
+    async def _list():
+        try:
+            from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            from rich.table import Table
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            pool = DistributedMemoryPool(cluster_config)
+            await pool.initialize()
+            
+            if not pool.blocks:
+                console.print("[yellow]No allocated blocks[/yellow]")
+            else:
+                table = Table(title="Allocated Memory Blocks")
+                table.add_column("Block ID", style="cyan")
+                table.add_column("Node", style="green")
+                table.add_column("Size", justify="right")
+                
+                for block_id, block in pool.blocks.items():
+                    table.add_row(
+                        block_id,
+                        block.node_id,
+                        f"{block.size_bytes / (1024**2):.2f} MB"
+                    )
+                
+                console.print(table)
+            
+            await pool.shutdown()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+
+    asyncio.run(_list())
+
+
 @offload.command()
 @click.option(
     "--config",
@@ -1499,6 +1656,18 @@ def status(config: Path) -> None:
             # Get cluster status
             nodes = ray.nodes()
             
+            # Get running tasks per node
+            node_task_counts = {}
+            try:
+                from ray.util.state import list_tasks
+                running_tasks = list_tasks(filters=[("state", "=", "RUNNING")])
+                for task in running_tasks:
+                    node_ip = task.worker_node_ip or "Unknown"
+                    node_task_counts[node_ip] = node_task_counts.get(node_ip, 0) + 1
+            except ImportError:
+                # Fallback for older Ray versions
+                node_task_counts = {}
+            
             console.print("[green]Ray Cluster Status:[/green]\n")
             
             status_table = Table()
@@ -1521,8 +1690,8 @@ def status(config: Path) -> None:
                 # Convert memory to GB
                 memory_gb = memory / (1024**3) if memory > 0 else 0
                 
-                # Get active tasks count (approximate)
-                active_tasks = len(ray.cluster_resources())
+                # Get active tasks count for this specific node
+                active_tasks = node_task_counts.get(node_ip, 0)
                 
                 status_table.add_row(
                     node_ip,

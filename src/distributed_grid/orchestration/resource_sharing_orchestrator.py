@@ -27,6 +27,7 @@ from distributed_grid.orchestration.enhanced_offloading_executor import (
 )
 from distributed_grid.orchestration.offloading_detector import OffloadingDetector
 from distributed_grid.orchestration.offloading_executor import OffloadingExecutor
+from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
 
 logger = structlog.get_logger(__name__)
 
@@ -52,6 +53,7 @@ class ResourceSharingOrchestrator:
         self.enhanced_executor: Optional[EnhancedOffloadingExecutor] = None
         self.legacy_executor: Optional[OffloadingExecutor] = None
         self.offloading_detector: Optional[OffloadingDetector] = None
+        self.distributed_memory_pool: Optional[DistributedMemoryPool] = None
         
         # Configuration
         self.resource_sharing_enabled = cluster_config.resource_sharing.enabled
@@ -144,6 +146,11 @@ class ResourceSharingOrchestrator:
             self.cluster_config
         )
         
+        # Initialize distributed memory pool
+        self.distributed_memory_pool = DistributedMemoryPool(self.cluster_config)
+        await self.distributed_memory_pool.initialize()
+        logger.info("Distributed memory pool initialized")
+        
     async def _initialize_legacy(self) -> None:
         """Initialize legacy components without resource sharing."""
         self.legacy_executor = OffloadingExecutor(
@@ -189,6 +196,9 @@ class ResourceSharingOrchestrator:
         if self.metrics_collector:
             await self.metrics_collector.stop()
             
+        if self.distributed_memory_pool:
+            await self.distributed_memory_pool.shutdown()
+            
         if self.legacy_executor:
             # Legacy executor doesn't have explicit stop
             pass
@@ -228,6 +238,10 @@ class ResourceSharingOrchestrator:
             # Add executor statistics
             if self.enhanced_executor:
                 status["executor"] = await self.enhanced_executor.get_enhanced_statistics()
+                
+            # Add distributed memory pool statistics
+            if self.distributed_memory_pool:
+                status["distributed_memory"] = await self.distributed_memory_pool.get_stats()
         else:
             # Legacy status
             if self.legacy_executor:
@@ -347,3 +361,91 @@ class ResourceSharingOrchestrator:
             }
             
         return result
+
+    # Distributed Memory Pool API Methods
+    
+    async def allocate_distributed_memory(
+        self,
+        size_bytes: int,
+        preferred_node: Optional[str] = None,
+    ) -> Optional[str]:
+        """Allocate distributed memory block.
+        
+        Args:
+            size_bytes: Size in bytes to allocate
+            preferred_node: Optional preferred node for allocation
+            
+        Returns:
+            Block ID if successful, None otherwise
+        """
+        if not self.distributed_memory_pool:
+            raise RuntimeError("Distributed memory pool is not initialized")
+            
+        return await self.distributed_memory_pool.allocate(size_bytes, preferred_node)
+    
+    async def deallocate_distributed_memory(self, block_id: str) -> bool:
+        """Deallocate distributed memory block.
+        
+        Args:
+            block_id: Block ID to deallocate
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.distributed_memory_pool:
+            raise RuntimeError("Distributed memory pool is not initialized")
+            
+        return await self.distributed_memory_pool.deallocate(block_id)
+    
+    async def write_distributed_memory(
+        self,
+        block_id: str,
+        data: bytes,
+        offset: int = 0,
+    ) -> bool:
+        """Write data to distributed memory block.
+        
+        Args:
+            block_id: Block ID to write to
+            data: Data bytes to write
+            offset: Offset in bytes to start writing
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.distributed_memory_pool:
+            raise RuntimeError("Distributed memory pool is not initialized")
+            
+        return await self.distributed_memory_pool.write(block_id, data, offset)
+    
+    async def read_distributed_memory(
+        self,
+        block_id: str,
+        size: int,
+        offset: int = 0,
+    ) -> Optional[bytes]:
+        """Read data from distributed memory block.
+        
+        Args:
+            block_id: Block ID to read from
+            size: Number of bytes to read
+            offset: Offset in bytes to start reading
+            
+        Returns:
+            Data bytes if successful, None otherwise
+        """
+        if not self.distributed_memory_pool:
+            raise RuntimeError("Distributed memory pool is not initialized")
+            
+        return await self.distributed_memory_pool.read(block_id, size, offset)
+    
+    async def get_distributed_memory_stats(self) -> Dict[str, Any]:
+        """Get distributed memory pool statistics.
+        
+        Returns:
+            Statistics dictionary with node-level details
+        """
+        if not self.distributed_memory_pool:
+            raise RuntimeError("Distributed memory pool is not initialized")
+            
+        return await self.distributed_memory_pool.get_stats()
