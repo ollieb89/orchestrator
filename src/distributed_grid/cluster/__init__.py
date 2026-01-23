@@ -129,6 +129,7 @@ class RayClusterManager:
         # Use fixed ports to make cluster networking predictable.
         node_manager_port = 10001
         object_manager_port = 10002
+        ray_client_server_port = 10003
         min_worker_port = 11000
         max_worker_port = 11100
         start_cmd = (
@@ -137,6 +138,7 @@ class RayClusterManager:
             f"--node-ip-address={head_ip} "
             f"--node-manager-port={node_manager_port} "
             f"--object-manager-port={object_manager_port} "
+            f"--ray-client-server-port={ray_client_server_port} "
             f"--min-worker-port={min_worker_port} "
             f"--max-worker-port={max_worker_port} "
             f"--dashboard-host=0.0.0.0 "
@@ -192,6 +194,7 @@ class RayClusterManager:
         # Use the same fixed ports/ranges as head (ports are per-host, so no conflict).
         node_manager_port = 10001
         object_manager_port = 10002
+        ray_client_server_port = 10003
         min_worker_port = 11000
         max_worker_port = 11100
         start_cmd = (
@@ -200,6 +203,7 @@ class RayClusterManager:
             f"--node-ip-address={worker_ip} "
             f"--node-manager-port={node_manager_port} "
             f"--object-manager-port={object_manager_port} "
+            f"--ray-client-server-port={ray_client_server_port} "
             f"--min-worker-port={min_worker_port} "
             f"--max-worker-port={max_worker_port}"
         )
