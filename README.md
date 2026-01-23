@@ -85,43 +85,53 @@ pip install -e ".[dev]"
 
 ## CLI Reference
 
-### Commands
-
-- `grid init` - Initialize the grid cluster
-- `grid status` - Show cluster status and health
-- `grid run <command>` - Execute a command on the cluster
-- `grid config` - Generate a sample configuration file
-
-### Resource Boost Commands
-
-- `grid boost request <node> <resource> <amount>` - Request additional resources
-- `grid boost release <boost-id>` - Release an active resource boost
-- `grid boost status` - Show current resource boost status
-
-#### Resource Boost Examples
+### Cluster Management
 
 ```bash
-# Request 2 CPU cores with high priority
+# Install Ray on all nodes
+grid cluster install -c config/my-cluster-enhanced.yaml
+
+# Start the cluster
+grid cluster start -c config/my-cluster-enhanced.yaml
+
+# Check cluster status
+grid cluster status -c config/my-cluster-enhanced.yaml
+
+# Stop the cluster
+grid cluster stop -c config/my-cluster-enhanced.yaml
+```
+
+### Resource Boosting
+
+GPUMaster can request additional resources from worker nodes:
+
+```bash
+# Request 2 CPUs from any available worker
 grid boost request gpu-master cpu 2.0 --priority high
 
 # Request 1 GPU for 30 minutes
 grid boost request gpu-master gpu 1 --duration 1800
 
-# Request 8GB memory from a specific worker
+# Request memory from a specific worker
 grid boost request gpu-master memory 8.0 --source gpu2
 
 # Check active boosts
 grid boost status
 
 # Release a boost
-grid boost release req_1234567890_gpu-master
+grid boost release <boost-id>
+```
+
+### Quick Status
+
+```bash
+# Show cluster and boost overview
+grid status
 ```
 
 ### Options
 
-- `--config, -c` - Path to configuration file (default: `config/cluster_config.yaml`)
-- `--nodes, -n` - Number of nodes to use
-- `--gpus, -g` - Number of GPUs per node
+- `--config, -c` - Path to configuration file (default: `config/my-cluster-enhanced.yaml`)
 - `--verbose, -v` - Enable verbose output
 
 For detailed documentation on resource boosting, see [Resource Boost Manager Guide](docs/resource_boost_manager_guide.md).
