@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
 from typing import Dict, List, Optional, Tuple, Any
@@ -16,6 +17,7 @@ import structlog
 from ray import nodes
 
 from distributed_grid.config import ClusterConfig, NodeConfig
+from distributed_grid.core.ssh_manager import SSHManager
 
 logger = structlog.get_logger(__name__)
 
@@ -100,11 +102,13 @@ class ResourceMetricsCollector:
     def __init__(
         self,
         cluster_config: ClusterConfig,
+        ssh_manager: Optional[SSHManager] = None,
         collection_interval: float = 10.0,
         history_size: int = 100,
     ):
         """Initialize the metrics collector."""
         self.cluster_config = cluster_config
+        self.ssh_manager = ssh_manager
         self.collection_interval = collection_interval
         self.history_size = history_size
         
@@ -210,13 +214,125 @@ class ResourceMetricsCollector:
         if node_config.host == "localhost" or node_config.host == ray.util.get_node_ip_address():
             return self._collect_local_metrics(node_config)
         
-        # For remote nodes, we'd typically use SSH or Ray's metrics API
-        # For now, we'll use Ray's node resources if available
+        if self.ssh_manager is not None:
+            snapshot = await self._collect_ssh_node_metrics(node_config)
+            if snapshot is not None:
+                return snapshot
+
+        # For remote nodes, fall back to Ray's node resources if available.
         if ray_node:
             return self._collect_ray_node_metrics(node_config, ray_node)
         
         # Fallback to configured resources
         return self._get_configured_metrics(node_config)
+
+    async def _collect_ssh_node_metrics(self, node_config: NodeConfig) -> Optional[ResourceSnapshot]:
+        try:
+            assert self.ssh_manager is not None
+
+            py_cmd = (
+                "python3 -c \""
+                "import json, os, time; "
+                "parts=open('/proc/stat','r').readline().split()[1:8]; "
+                "nums=[int(x) for x in parts]; "
+                "idle1=nums[3]+nums[4]; total1=sum(nums); "
+                "time.sleep(0.2); "
+                "parts=open('/proc/stat','r').readline().split()[1:8]; "
+                "nums=[int(x) for x in parts]; "
+                "idle2=nums[3]+nums[4]; total2=sum(nums); "
+                "dt=max(1, total2-total1); di=max(0, idle2-idle1); "
+                "cpu_percent=100.0*(1.0-(di/dt)); "
+                "cpu_count=os.cpu_count() or 0; "
+                "cpu_used=float(cpu_count)*(cpu_percent/100.0); "
+                "cpu_available=max(0.0, float(cpu_count)-cpu_used); "
+                "mem_lines=open('/proc/meminfo','r').read().splitlines(); "
+                "mem_total=int(next(l.split()[1] for l in mem_lines if l.startswith('MemTotal:')))*1024; "
+                "mem_available=int(next(l.split()[1] for l in mem_lines if l.startswith('MemAvailable:')))*1024; "
+                "mem_used=max(0, mem_total-mem_available); "
+                "mem_percent=(float(mem_used)/float(mem_total)*100.0) if mem_total>0 else 0.0; "
+                "out={"
+                "  'cpu_count': int(cpu_count),"
+                "  'cpu_used': float(cpu_used),"
+                "  'cpu_available': float(cpu_available),"
+                "  'cpu_percent': float(cpu_percent),"
+                "  'memory_total': int(mem_total),"
+                "  'memory_used': int(mem_used),"
+                "  'memory_available': int(mem_available),"
+                "  'memory_percent': float(mem_percent)"
+                "}; "
+                "print(json.dumps(out))"
+                "\""
+            )
+
+            result = await self.ssh_manager.run_command(node_config.name, py_cmd, timeout=30)
+            if result.exit_status != 0 or not result.stdout:
+                logger.warning(
+                    "SSH metrics probe failed",
+                    node=node_config.name,
+                    exit_status=result.exit_status,
+                    stderr=result.stderr,
+                    stdout=result.stdout,
+                )
+                return None
+
+            try:
+                data = json.loads(result.stdout)
+            except Exception:
+                logger.warning(
+                    "SSH metrics probe returned invalid JSON",
+                    node=node_config.name,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                )
+                return None
+
+            # GPU (best-effort): use nvidia-smi if present.
+            gpu_count = int(node_config.gpu_count)
+            gpu_used = 0
+            gpu_memory_total_bytes = 0
+            gpu_memory_used_bytes = 0
+
+            smi_cmd = "nvidia-smi --query-gpu=utilization.gpu,memory.total,memory.used --format=csv,noheader,nounits"
+            smi = await self.ssh_manager.run_command(node_config.name, smi_cmd, timeout=15)
+            if smi.exit_status == 0 and smi.stdout:
+                lines = [ln.strip() for ln in smi.stdout.splitlines() if ln.strip()]
+                gpu_count = len(lines)
+                for ln in lines:
+                    parts = [p.strip() for p in ln.split(",")]
+                    if len(parts) >= 3:
+                        util = float(parts[0])
+                        mem_total_mib = float(parts[1])
+                        mem_used_mib = float(parts[2])
+                        if util > 10.0:
+                            gpu_used += 1
+                        gpu_memory_total_bytes += int(mem_total_mib * 1024 * 1024)
+                        gpu_memory_used_bytes += int(mem_used_mib * 1024 * 1024)
+
+            gpu_available = max(0, int(gpu_count) - int(gpu_used))
+            gpu_memory_available_bytes = max(0, int(gpu_memory_total_bytes) - int(gpu_memory_used_bytes))
+
+            return ResourceSnapshot(
+                node_id=node_config.name,
+                node_name=node_config.name,
+                timestamp=datetime.now(UTC),
+                cpu_count=int(data.get("cpu_count", 0)),
+                cpu_used=float(data.get("cpu_used", 0.0)),
+                cpu_available=float(data.get("cpu_available", 0.0)),
+                cpu_percent=float(data.get("cpu_percent", 0.0)),
+                memory_total=int(data.get("memory_total", 0)),
+                memory_used=int(data.get("memory_used", 0)),
+                memory_available=int(data.get("memory_available", 0)),
+                memory_percent=float(data.get("memory_percent", 0.0)),
+                gpu_count=int(gpu_count),
+                gpu_used=int(gpu_used),
+                gpu_available=int(gpu_available),
+                gpu_memory_total=int(gpu_memory_total_bytes),
+                gpu_memory_used=int(gpu_memory_used_bytes),
+                gpu_memory_available=int(gpu_memory_available_bytes),
+            )
+        except Exception as e:
+            logger.warning("SSH metrics probe exception", node=node_config.name, error=str(e))
+            return None
         
     def _collect_local_metrics(self, node_config: NodeConfig) -> ResourceSnapshot:
         """Collect metrics from the local node."""

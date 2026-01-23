@@ -681,7 +681,24 @@ class ResourceSharingManager:
         
         # Prefer live metrics-derived pool if available; otherwise fall back to persisted pool.
         snapshots = self.metrics_collector.get_all_latest_snapshots()
+        node_snapshots: Dict[str, Any] = {}
         if snapshots:
+            for node_id, s in snapshots.items():
+                node_snapshots[node_id] = {
+                    "timestamp": s.timestamp.isoformat(),
+                    "cpu_count": s.cpu_count,
+                    "cpu_used": s.cpu_used,
+                    "cpu_available": s.cpu_available,
+                    "cpu_percent": s.cpu_percent,
+                    "memory_total": s.memory_total,
+                    "memory_used": s.memory_used,
+                    "memory_available": s.memory_available,
+                    "memory_percent": s.memory_percent,
+                    "gpu_count": s.gpu_count,
+                    "gpu_used": s.gpu_used,
+                    "gpu_available": s.gpu_available,
+                }
+
             shared_resources = self._compute_live_shared_resources(snapshots)
             self._save_shared_resources()
         else:
@@ -698,6 +715,7 @@ class ResourceSharingManager:
             "pending_requests_count": 0,  # Could be tracked if needed
             "active_allocations": active_allocations,
             "shared_resources": shared_resources,
+            "node_snapshots": node_snapshots,
             "node_priorities": self._node_priorities,
             "master_node": self._master_node,
         }

@@ -87,6 +87,7 @@ class ResourceSharingOrchestrator:
         # Initialize metrics collector
         self.metrics_collector = ResourceMetricsCollector(
             self.cluster_config,
+            ssh_manager=self.ssh_manager,
             collection_interval=float(config.monitoring_interval_seconds),
         )
         await self.metrics_collector.start()

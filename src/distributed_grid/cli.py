@@ -911,10 +911,24 @@ def status(config: Path) -> None:
             if status.get("resource_sharing"):
                 sharing = status["resource_sharing"]
 
-                node_totals = {
-                    n.name: {"CPU": float(n.cpu_count), "GPU": float(n.gpu_count), "MEMORY": float(n.memory_gb)}
-                    for n in cluster_config.nodes
-                }
+                # Prefer live totals from snapshots (more accurate than config if the config is outdated).
+                snapshots_for_totals = sharing.get("node_snapshots") or {}
+                node_totals = {}
+                for n in cluster_config.nodes:
+                    snap = snapshots_for_totals.get(n.name) or {}
+                    cpu_total = snap.get("cpu_count")
+                    gpu_total = snap.get("gpu_count")
+                    mem_total_bytes = snap.get("memory_total")
+
+                    node_totals[n.name] = {
+                        "CPU": float(cpu_total) if cpu_total is not None else float(n.cpu_count),
+                        "GPU": float(gpu_total) if gpu_total is not None else float(n.gpu_count),
+                        "MEMORY": (
+                            float(mem_total_bytes) / (1024**3)
+                            if mem_total_bytes is not None
+                            else float(n.memory_gb)
+                        ),
+                    }
 
                 def _fmt_number(value: object) -> str:
                     try:
@@ -922,8 +936,9 @@ def status(config: Path) -> None:
                     except Exception:
                         return str(value)
 
-                    # Round to 1 decimal to avoid float artifacts like 0.8000000000000007
-                    v = round(v, 1)
+                    # Floor to 1 decimal (avoid overstating "left" resources; e.g., 7.95 -> 7.9 not 8.0)
+                    # and avoid float artifacts like 0.8000000000000007.
+                    v = (int(v * 10) / 10.0) if v >= 0 else (int(v * 10) / 10.0)
                     text = f"{v:.1f}"
                     text = text.rstrip("0").rstrip(".")
                     return text
@@ -933,8 +948,13 @@ def status(config: Path) -> None:
                     if total is None:
                         return _fmt_number(left)
 
-                    left_s = _fmt_number(left)
-                    total_s = _fmt_number(total)
+                    # For discrete resources, avoid showing decimals.
+                    if resource == "GPU":
+                        left_s = str(int(float(left)))
+                        total_s = str(int(float(total)))
+                    else:
+                        left_s = _fmt_number(left)
+                        total_s = _fmt_number(total)
                     if resource == "MEMORY":
                         return f"{left_s}/{total_s} GB"
                     return f"{left_s}/{total_s}"
@@ -982,6 +1002,42 @@ def status(config: Path) -> None:
                         r_type_str = str(r_type_str)
                         resources_table.add_row(node, r_type_str, _fmt_left_total(node, r_type_str, amt))
                 console.print(resources_table)
+
+                # Utilization summary (helps validate whether metrics are real or falling back to defaults)
+                snapshots = sharing.get("node_snapshots") or {}
+                if snapshots:
+                    def _fmt_percent(value: object) -> str:
+                        try:
+                            v = float(value)
+                        except Exception:
+                            return "-"
+                        v = round(v, 1)
+                        text = f"{v:.1f}".rstrip("0").rstrip(".")
+                        return f"{text}%"
+
+                    util_table = Table(title="Node Utilization")
+                    util_table.add_column("Node")
+                    util_table.add_column("CPU", justify="right")
+                    util_table.add_column("Memory", justify="right")
+                    util_table.add_column("GPU", justify="right")
+
+                    for node in sorted(snapshots.keys()):
+                        s = snapshots[node] or {}
+                        cpu_pct = s.get("cpu_percent")
+                        mem_pct = s.get("memory_percent")
+                        gpu_used = s.get("gpu_used")
+                        gpu_count = s.get("gpu_count")
+
+                        cpu_text = _fmt_percent(cpu_pct) if cpu_pct is not None else "-"
+                        mem_text = _fmt_percent(mem_pct) if mem_pct is not None else "-"
+                        if gpu_used is not None and gpu_count is not None:
+                            gpu_text = f"{int(gpu_used)}/{int(gpu_count)}"
+                        else:
+                            gpu_text = "-"
+
+                        util_table.add_row(str(node), cpu_text, mem_text, gpu_text)
+
+                    console.print(util_table)
 
             await orchestrator.stop()
             await ssh_manager.close_all()
