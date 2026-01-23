@@ -1139,20 +1139,37 @@ def allocate(size: float, node: str | None, config: Path) -> None:
             
             cluster_config = ClusterConfig.from_yaml(config)
             pool = DistributedMemoryPool(cluster_config)
-            await pool.initialize()
+            # Use persistent initialization to keep actors alive
+            await pool.initialize(persistent=True)
             
             size_bytes = int(size * 1024**3)
             block_id = await pool.allocate(size_bytes, preferred_node=node)
             
             if block_id:
+                # Also record this as a resource allocation in ResourceSharingManager
+                from distributed_grid.orchestration.resource_sharing_orchestrator import ResourceSharingOrchestrator
+                from distributed_grid.monitoring.resource_metrics import ResourceMetricsCollector
+                from datetime import timedelta
+                
+                metrics_collector = ResourceMetricsCollector(cluster_config)
+                orchestrator = ResourceSharingOrchestrator(cluster_config, None) # SSH manager not needed for this
+                await orchestrator.initialize()
+                
+                # Request the memory resource formally with zero duration to make it sticky
+                await orchestrator.request_resources(
+                    node_id=node if node else "any",
+                    resource_type="memory",
+                    amount=size,
+                    priority="normal",
+                    duration=timedelta(seconds=0)  # Sticky allocation
+                )
+                
                 console.print(f"[green]✓[/green] Allocated {size:.2f} GB")
                 console.print(f"Block ID: [bold]{block_id}[/bold]")
                 if node:
-                    console.print(f"Node: {node}")
+                    console.print(f"Node: [bold]{node}[/bold]")
             else:
                 console.print(f"[red]✗[/red] Failed to allocate memory")
-            
-            await pool.shutdown()
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             import traceback
@@ -1170,22 +1187,40 @@ def deallocate(block_id: str, config: Path) -> None:
 
     async def _deallocate():
         try:
+            import ray
             from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            from distributed_grid.orchestration.resource_sharing_orchestrator import ResourceSharingOrchestrator
+            
+            # Initialize Ray
+            if not ray.is_initialized():
+                ray.init(address="auto")
             
             cluster_config = ClusterConfig.from_yaml(config)
             pool = DistributedMemoryPool(cluster_config)
-            await pool.initialize()
+            # Use persistent mode to connect to existing actors
+            await pool.initialize(persistent=True)
             
             success = await pool.deallocate(block_id)
             
             if success:
+                # Also remove from resource sharing allocations
+                orchestrator = ResourceSharingOrchestrator(cluster_config, None)
+                await orchestrator.initialize()
+                
+                # Find and remove the allocation
+                allocations = orchestrator.resource_sharing_manager._active_allocations
+                for alloc in allocations:
+                    if alloc.allocation_id == block_id or alloc.allocation_id.endswith(f"_{block_id}"):
+                        await orchestrator.release_resources(alloc.allocation_id)
+                        break
+                
                 console.print(f"[green]✓[/green] Deallocated block: {block_id}")
             else:
                 console.print(f"[red]✗[/red] Failed to deallocate block: {block_id}")
-            
-            await pool.shutdown()
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
 
     asyncio.run(_deallocate())
 
@@ -1198,12 +1233,19 @@ def stats(config: Path) -> None:
 
     async def _stats():
         try:
+            import ray
             from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            from distributed_grid.orchestration.resource_sharing_orchestrator import ResourceSharingOrchestrator
             from rich.table import Table
+            
+            # Initialize Ray
+            if not ray.is_initialized():
+                ray.init(address="auto")
             
             cluster_config = ClusterConfig.from_yaml(config)
             pool = DistributedMemoryPool(cluster_config)
-            await pool.initialize()
+            # Use persistent mode to connect to existing actors
+            await pool.initialize(persistent=True)
             
             stats = await pool.get_stats()
             
@@ -1225,11 +1267,190 @@ def stats(config: Path) -> None:
             
             console.print(table)
             
-            await pool.shutdown()
+            # Show active memory allocations from resource sharing
+            console.print("\n[bold]Active Memory Allocations[/bold]")
+            orchestrator = ResourceSharingOrchestrator(cluster_config, None)
+            await orchestrator.initialize()
+            
+            allocations = orchestrator.resource_sharing_manager._active_allocations
+            memory_allocations = [a for a in allocations if a.resource_type == ResourceType.MEMORY]
+            
+            if memory_allocations:
+                alloc_table = Table()
+                alloc_table.add_column("Allocation ID", style="cyan")
+                alloc_table.add_column("Node", justify="center")
+                alloc_table.add_column("Amount", justify="right")
+                alloc_table.add_column("Status", justify="center")
+                
+                for alloc in memory_allocations:
+                    status = "[green]Active[/green]" if not alloc.is_expired else "[red]Expired[/red]"
+                    alloc_table.add_row(
+                        alloc.allocation_id,
+                        alloc.node_id,
+                        f"{alloc.amount:.2f} GB",
+                        status
+                    )
+                
+                console.print(alloc_table)
+            else:
+                console.print("[dim]No active memory allocations found[/dim]")
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
 
     asyncio.run(_stats())
+
+
+@memory.command()
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def status(config: Path) -> None:
+    """Show memory allocation status from resource sharing."""
+    setup_logging()
+
+    async def _status():
+        try:
+            import ray
+            from distributed_grid.orchestration.resource_sharing_orchestrator import ResourceSharingOrchestrator
+            from rich.table import Table
+            from datetime import datetime
+            
+            # Initialize Ray
+            if not ray.is_initialized():
+                ray.init(address="auto")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            orchestrator = ResourceSharingOrchestrator(cluster_config, None)
+            await orchestrator.initialize()
+            
+            # Get memory allocations
+            allocations = orchestrator.resource_sharing_manager._active_allocations
+            memory_allocations = [a for a in allocations if a.resource_type == ResourceType.MEMORY]
+            
+            console.print("\n[bold]Memory Allocation Status[/bold]\n")
+            
+            if memory_allocations:
+                # Summary
+                total_memory = sum(a.amount for a in memory_allocations)
+                console.print(f"Total Active Allocations: {len(memory_allocations)}")
+                console.print(f"Total Memory Allocated: {total_memory:.2f} GB\n")
+                
+                # Detailed table
+                table = Table(title="Active Memory Allocations")
+                table.add_column("Allocation ID", style="cyan", no_wrap=True)
+                table.add_column("Node", justify="center")
+                table.add_column("Amount (GB)", justify="right")
+                table.add_column("Priority", justify="center")
+                table.add_column("Allocated At", justify="center")
+                table.add_column("Status", justify="center")
+                
+                for alloc in memory_allocations:
+                    # Format allocation time
+                    alloc_time = alloc.allocated_at.strftime("%H:%M:%S") if alloc.allocated_at else "Unknown"
+                    
+                    # Status with color
+                    if alloc.is_expired:
+                        status = "[red]Expired[/red]"
+                    elif alloc.lease_duration and alloc.lease_duration.total_seconds() > 0:
+                        # Time-limited allocation
+                        remaining = alloc.allocated_at + alloc.lease_duration - datetime.now(alloc.allocated_at.tzinfo)
+                        if remaining.total_seconds() > 0:
+                            hours, remainder = divmod(int(remaining.total_seconds()), 3600)
+                            minutes, seconds = divmod(remainder, 60)
+                            status = f"[yellow]{hours}h {minutes}m[/yellow]"
+                        else:
+                            status = "[red]Expired[/red]"
+                    else:
+                        # Sticky allocation (no expiry)
+                        status = "[green]Sticky[/green]"
+                    
+                    table.add_row(
+                        alloc.allocation_id,
+                        alloc.target_node,
+                        f"{alloc.amount:.2f}",
+                        alloc.priority.name if hasattr(alloc, 'priority') and alloc.priority else "Normal",
+                        alloc_time,
+                        status
+                    )
+                
+                console.print(table)
+                
+                # Legend
+                console.print("\n[dim]Status Legend:[/dim]")
+                console.print("  [green]Sticky[/green] - Persistent allocation (no expiry)")
+                console.print("  [yellow]Xh Ym[/yellow] - Time remaining before expiry")
+                console.print("  [red]Expired[/red] - Allocation has expired")
+            else:
+                console.print("[dim]No memory allocations found[/dim]")
+                console.print("\n[cyan]Tip:[/cyan] Use 'grid memory allocate --size <GB> --node <node>' to create a sticky memory allocation")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
+
+    asyncio.run(_status())
+
+
+@memory.command()
+@click.argument("allocation_id")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def release(allocation_id: str, config: Path) -> None:
+    """Release a memory allocation by allocation ID."""
+    setup_logging()
+
+    async def _release():
+        try:
+            import ray
+            from distributed_grid.orchestration.resource_sharing_orchestrator import ResourceSharingOrchestrator
+            
+            # Initialize Ray
+            if not ray.is_initialized():
+                ray.init(address="auto")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            orchestrator = ResourceSharingOrchestrator(cluster_config, None)
+            await orchestrator.initialize()
+            
+            # Find the allocation
+            allocations = orchestrator.resource_sharing_manager._active_allocations
+            memory_allocations = {a.allocation_id: a for a in allocations if a.resource_type == ResourceType.MEMORY}
+            
+            # Try exact match first
+            target_alloc = None
+            if allocation_id in memory_allocations:
+                target_alloc = memory_allocations[allocation_id]
+            else:
+                # Try partial match (block ID)
+                for alloc_id, alloc in memory_allocations.items():
+                    if alloc_id.endswith(f"_{allocation_id}"):
+                        target_alloc = alloc
+                        break
+            
+            if not target_alloc:
+                console.print(f"[red]✗[/red] Memory allocation not found: {allocation_id}")
+                console.print("\n[dim]Available allocations:[/dim]")
+                if memory_allocations:
+                    for alloc_id in memory_allocations:
+                        console.print(f"  - {alloc_id}")
+                else:
+                    console.print("  [dim]None[/dim]")
+                return
+            
+            # Release the allocation
+            success = await orchestrator.release_resources(target_alloc.allocation_id)
+            
+            if success:
+                console.print(f"[green]✓[/green] Released memory allocation: {target_alloc.allocation_id}")
+                console.print(f"  Node: {target_alloc.target_node}")
+                console.print(f"  Amount: {target_alloc.amount:.2f} GB")
+            else:
+                console.print(f"[red]✗[/red] Failed to release allocation: {target_alloc.allocation_id}")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
+
+    asyncio.run(_release())
 
 
 @memory.command()

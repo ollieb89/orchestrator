@@ -24,6 +24,29 @@ class ResourceSharingPersistence:
         
         self.allocations_file = self.data_dir / "resource_allocations.json"
         self.shared_resources_file = self.data_dir / "shared_resources.json"
+        self.memory_stores_file = self.data_dir / "memory_stores.json"
+        
+    def save_memory_stores(self, stores: List[Dict[str, Any]]) -> None:
+        """Save memory stores to file."""
+        try:
+            with open(self.memory_stores_file, 'w') as f:
+                json.dump({
+                    "stores": stores,
+                    "timestamp": datetime.utcnow().isoformat()
+                }, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save memory stores: {e}")
+            
+    def load_memory_stores(self) -> List[Dict[str, Any]]:
+        """Load memory stores from file."""
+        try:
+            if self.memory_stores_file.exists():
+                with open(self.memory_stores_file, 'r') as f:
+                    data = json.load(f)
+                    return data.get("stores", [])
+        except Exception as e:
+            logger.error(f"Failed to load memory stores: {e}")
+        return []
         
     def save_allocations(self, allocations: List[Dict[str, Any]]) -> None:
         """Save allocations to file."""
@@ -76,5 +99,7 @@ class ResourceSharingPersistence:
                 self.allocations_file.unlink()
             if self.shared_resources_file.exists():
                 self.shared_resources_file.unlink()
+            if self.memory_stores_file.exists():
+                self.memory_stores_file.unlink()
         except Exception as e:
             logger.error(f"Failed to clear persisted data: {e}")

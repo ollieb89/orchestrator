@@ -109,6 +109,28 @@ class ResourceSharingManager:
         # Initialize shared resource pools
         await self._initialize_shared_resources()
         
+        # Load persisted allocations
+        persisted_allocations = self._persistence.load_allocations()
+        if persisted_allocations:
+            from distributed_grid.monitoring.resource_metrics import ResourceType
+            from distributed_grid.orchestration.resource_sharing_types import ResourceAllocation
+            
+            self._active_allocations = []
+            for alloc_data in persisted_allocations:
+                resource_type_raw = alloc_data.get("resource_type")
+                resource_type_value = self._normalize_resource_type(resource_type_raw)
+                allocation = ResourceAllocation(
+                    allocation_id=alloc_data["allocation_id"],
+                    request_id=alloc_data["request_id"],
+                    source_node=alloc_data["source_node"],
+                    target_node=alloc_data["target_node"],
+                    resource_type=ResourceType(resource_type_value),
+                    amount=alloc_data["amount"],
+                    allocated_at=datetime.fromisoformat(alloc_data["allocated_at"]),
+                    lease_duration=None,  # Could be restored from data if needed
+                )
+                self._active_allocations.append(allocation)
+        
         # Start rebalancing loop
         self._rebalance_task = asyncio.create_task(self._rebalancing_loop())
         
@@ -499,6 +521,9 @@ class ResourceSharingManager:
             # Remove from active allocations
             if allocation in self._active_allocations:
                 self._active_allocations.remove(allocation)
+            
+            # Save to persistence
+            self._save_allocations()
                 
             logger.info(
                 "Resource allocation released",

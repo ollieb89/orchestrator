@@ -70,4 +70,7 @@ class ResourceAllocation:
         """Check if the allocation has expired."""
         if not self.lease_duration:
             return False
+        # Treat zero or negative duration as non-expiring/sticky
+        if self.lease_duration.total_seconds() <= 0:
+            return False
         return datetime.now(UTC) > self.allocated_at + self.lease_duration

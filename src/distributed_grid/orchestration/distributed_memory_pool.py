@@ -83,12 +83,20 @@ class DistributedMemoryPool:
         self.blocks: Dict[str, MemoryBlock] = {}
         self._initialized = False
         
-    async def initialize(self) -> None:
+    async def initialize(self, persistent: bool = False) -> None:
         """Initialize memory stores on all nodes."""
         if self._initialized:
             return
             
-        logger.info("Initializing distributed memory pool")
+        logger.info("Initializing distributed memory pool", persistent=persistent)
+        
+        # Load persisted stores if requested
+        persisted_stores = []
+        if persistent:
+            from distributed_grid.orchestration.resource_sharing_persistence import ResourceSharingPersistence
+            persistence = ResourceSharingPersistence()
+            persisted_stores = persistence.load_memory_stores()
+            logger.debug("Loaded persisted memory stores", count=len(persisted_stores))
         
         # Get Ray node mapping
         host_to_ray_id = get_host_to_ray_node_mapping()
@@ -117,16 +125,36 @@ class DistributedMemoryPool:
                                  available_ips=list(host_to_ray_id.keys()))
                     continue
                 
-                # Create actor pinned to specific node using actual Ray node ID
-                store = DistributedMemoryStore.options(
-                    name=f"memory_store_{node.name}",
-                    max_concurrency=10,
-                    # Pin to node using actual Ray node ID
-                    resources={f"node:{ray_node_id}": 0.01}
-                ).remote(node.name)
+                # Check if actor already exists (persistent mode)
+                actor_name = f"memory_store_{node.name}"
+                store = None
+                try:
+                    store = ray.get_actor(actor_name)
+                    logger.info("Connected to existing memory store", node_name=node.name)
+                except ValueError:
+                    # Create new actor if not exists
+                    store = DistributedMemoryStore.options(
+                        name=actor_name,
+                        max_concurrency=10,
+                        lifetime="detached" if persistent else None,
+                        # Pin to node using actual Ray node ID
+                        resources={f"node:{ray_node_id}": 0.01}
+                    ).remote(node.name)
+                    logger.info("Created new memory store", node_name=node.name, ray_node_id=ray_node_id, persistent=persistent)
                 
                 self.memory_stores[node.name] = store
-                logger.info("Created memory store", node_name=node.name, ray_node_id=ray_node_id)
+                
+        # Update persistence if in persistent mode
+        if persistent:
+            from distributed_grid.orchestration.resource_sharing_persistence import ResourceSharingPersistence
+            persistence = ResourceSharingPersistence()
+            stores_data = []
+            for node_name in self.memory_stores:
+                stores_data.append({
+                    "node_name": node_name,
+                    "actor_name": f"memory_store_{node_name}"
+                })
+            persistence.save_memory_stores(stores_data)
                 
         self._initialized = True
         logger.info("Distributed memory pool initialized", 

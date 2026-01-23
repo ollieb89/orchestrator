@@ -255,7 +255,7 @@ class ResourceSharingOrchestrator:
         resource_type: str,
         amount: float,
         priority: str = "normal",
-        duration_minutes: int = 30,
+        duration: Optional[timedelta] = None,
     ) -> str:
         """Request shared resources for a node."""
         if not self.resource_sharing_enabled or not self.resource_sharing_manager:
@@ -285,12 +285,15 @@ class ResourceSharingOrchestrator:
         
         p = priority_map.get(priority.lower(), AllocationPriority.NORMAL)
         
+        # Use provided duration or default to 30 mins
+        d = duration if duration is not None else timedelta(minutes=30)
+        
         return await self.resource_sharing_manager.request_resource(
             node_id=node_id,
             resource_type=rt,
             amount=amount,
             priority=p,
-            duration=timedelta(minutes=duration_minutes),
+            duration=d,
         )
         
     async def release_resources(self, allocation_id: str) -> bool:
