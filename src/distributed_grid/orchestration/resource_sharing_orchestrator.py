@@ -54,7 +54,7 @@ class ResourceSharingOrchestrator:
         self.offloading_detector: Optional[OffloadingDetector] = None
         
         # Configuration
-        self.resource_sharing_enabled = cluster_config.execution.get("resource_sharing", {}).get("enabled", False)
+        self.resource_sharing_enabled = cluster_config.resource_sharing.enabled
         
         # State
         self._initialized = False
@@ -82,29 +82,31 @@ class ResourceSharingOrchestrator:
         
     async def _initialize_resource_sharing(self) -> None:
         """Initialize resource sharing components."""
-        config = self.cluster_config.execution.get("resource_sharing", {})
+        config = self.cluster_config.resource_sharing
         
         # Initialize metrics collector
         self.metrics_collector = ResourceMetricsCollector(
             self.cluster_config,
-            collection_interval=config.get("monitoring_interval_seconds", 10.0),
+            collection_interval=float(config.monitoring_interval_seconds),
         )
         await self.metrics_collector.start()
         
-        # Initialize resource sharing manager
+        # Map string policy to enum
         policy_map = {
             "conservative": SharingPolicy.CONSERVATIVE,
             "balanced": SharingPolicy.BALANCED,
             "aggressive": SharingPolicy.AGGRESSIVE,
             "predictive": SharingPolicy.PREDICTIVE,
         }
-        policy = policy_map.get(config.get("policy", "balanced"), SharingPolicy.BALANCED)
+        policy = policy_map.get(config.policy.lower(), SharingPolicy.BALANCED)
         
+        # Initialize resource sharing manager
         self.resource_sharing_manager = ResourceSharingManager(
             self.cluster_config,
             self.metrics_collector,
             policy=policy,
-            rebalance_interval=config.get("rebalance_interval_seconds", 30.0),
+            rebalance_interval=float(config.rebalance_interval_seconds),
+            allocation_timeout=timedelta(minutes=config.allocation_timeout_minutes),
         )
         await self.resource_sharing_manager.start()
         
@@ -115,14 +117,15 @@ class ResourceSharingOrchestrator:
             self.resource_sharing_manager,
         )
         
-        # Initialize enhanced executor
+        # Map string mode to enum
         mode_map = {
             "offload_only": OffloadingMode.OFFLOAD_ONLY,
             "share_and_offload": OffloadingMode.SHARE_AND_OFFLOAD,
             "dynamic_balancing": OffloadingMode.DYNAMIC_BALANCING,
         }
-        mode = mode_map.get(config.get("mode", "dynamic_balancing"), OffloadingMode.DYNAMIC_BALANCING)
+        mode = mode_map.get(config.mode.lower(), OffloadingMode.DYNAMIC_BALANCING)
         
+        # Initialize enhanced executor
         self.enhanced_executor = EnhancedOffloadingExecutor(
             self.ssh_manager,
             self.cluster_config,
@@ -135,7 +138,10 @@ class ResourceSharingOrchestrator:
         await self.enhanced_executor.initialize()
         
         # Initialize offloading detector
-        self.offloading_detector = OffloadingDetector(self.cluster_config)
+        self.offloading_detector = OffloadingDetector(
+            self.ssh_manager,
+            self.cluster_config
+        )
         
     async def _initialize_legacy(self) -> None:
         """Initialize legacy components without resource sharing."""

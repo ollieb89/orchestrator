@@ -557,10 +557,20 @@ class ResourceSharingManager:
         
     def get_resource_status(self) -> Dict[str, Any]:
         """Get the current status of resource sharing."""
+        active_allocations = {}
+        for alloc in self._active_allocations:
+            active_allocations[alloc.allocation_id] = {
+                "node_id": alloc.target_node,
+                "resource_type": str(alloc.resource_type),
+                "amount": alloc.amount,
+                "priority": "normal",  # Priority not stored in allocation currently
+                "expires_at": (alloc.allocated_at + alloc.lease_duration).isoformat() if alloc.lease_duration else "never"
+            }
+
         return {
             "policy": self.policy,
-            "pending_requests": len(self._resource_requests),
-            "active_allocations": len(self._active_allocations),
+            "pending_requests_count": len(self._resource_requests),
+            "active_allocations": active_allocations,
             "shared_resources": self._shared_resources,
             "node_priorities": self._node_priorities,
             "master_node": self._master_node,

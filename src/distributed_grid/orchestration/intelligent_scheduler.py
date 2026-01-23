@@ -144,7 +144,7 @@ class IntelligentScheduler:
         """Initialize node capabilities based on configuration."""
         for node in self.cluster_config.nodes:
             self._node_capabilities[node.name] = {
-                "max_cpu": node.cpu_count if hasattr(node, "cpu_count") else 4,
+                "max_cpu": node.cpu_count,
                 "max_memory_gb": node.memory_gb,
                 "max_gpu": node.gpu_count,
                 "role": node.role,

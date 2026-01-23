@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class NodeConfig(BaseModel):
@@ -18,6 +18,8 @@ class NodeConfig(BaseModel):
     user: str = Field(..., description="SSH username")
     gpu_count: int = Field(..., ge=0, description="Number of GPUs available")
     memory_gb: int = Field(..., ge=1, description="Memory in GB")
+    role: str = Field("worker", description="Node role (master or worker)")
+    cpu_count: int = Field(4, ge=1, description="Number of CPU cores")
     ssh_key_path: Optional[Path] = Field(None, description="Path to SSH private key")
     tags: List[str] = Field(default_factory=list, description="Node tags")
     
@@ -43,6 +45,7 @@ class ExecutionConfig(BaseModel):
     retry_attempts: int = Field(3, ge=0, description="Number of retry attempts")
     working_directory: str = Field("/tmp/grid", description="Working directory on nodes")
     environment: Dict[str, str] = Field(default_factory=dict, description="Environment variables")
+    resource_sharing: Optional[ResourceSharingConfig] = Field(None, description="Legacy location for resource sharing config")
     
     @field_validator("working_directory")
     @classmethod
@@ -65,7 +68,12 @@ class ResourceSharingConfig(BaseModel):
     """Configuration for resource sharing."""
     
     enabled: bool = Field(True, description="Enable resource sharing")
-    check_interval: int = Field(60, ge=10, description="Resource check interval in seconds")
+    mode: str = Field("dynamic_balancing", description="Offloading mode")
+    policy: str = Field("balanced", description="Sharing policy")
+    monitoring_interval_seconds: int = Field(10, ge=1, description="Resource check interval in seconds")
+    rebalance_interval_seconds: int = Field(30, ge=1, description="Resource rebalance interval in seconds")
+    allocation_timeout_minutes: int = Field(10, ge=1, description="Resource allocation timeout in minutes")
+    check_interval: int = Field(60, ge=10, description="Legacy resource check interval in seconds")
     offer_expiry: int = Field(300, ge=60, description="Resource offer expiry in seconds")
     max_offers_per_node: int = Field(5, ge=1, description="Max concurrent offers per node")
     thresholds: Dict[str, float] = Field(
@@ -76,6 +84,13 @@ class ResourceSharingConfig(BaseModel):
             "memory_min_gb": 2.0,
             "cpu_percent_max": 30.0,
             "cpu_min_cores": 1.0,
+            "cpu_pressure_high": 0.8,
+            "cpu_pressure_low": 0.3,
+            "memory_pressure_high": 0.8,
+            "memory_pressure_low": 0.3,
+            "gpu_pressure_high": 0.8,
+            "gpu_pressure_low": 0.3,
+            "excess_threshold": 0.2,
         },
         description="Resource availability thresholds"
     )
@@ -89,6 +104,13 @@ class ClusterConfig(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     resource_sharing: ResourceSharingConfig = Field(default_factory=ResourceSharingConfig)
+    
+    @model_validator(mode="after")
+    def sync_resource_sharing(self) -> ClusterConfig:
+        """Sync resource_sharing from execution if provided there."""
+        if self.execution.resource_sharing:
+            self.resource_sharing = self.execution.resource_sharing
+        return self
     
     @classmethod
     def from_yaml(cls, path: Path) -> ClusterConfig:

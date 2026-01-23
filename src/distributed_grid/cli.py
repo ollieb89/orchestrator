@@ -20,7 +20,8 @@ from distributed_grid.provisioning import GridProvisioner
 from distributed_grid.cluster import RayClusterManager
 from distributed_grid.core.executor import GridExecutor
 from distributed_grid.core.ssh_manager import SSHManager
-from distributed_grid.orchestration.resource_sharing import ResourceType
+from distributed_grid.orchestration.resource_sharing_orchestrator import ResourceSharingOrchestrator
+from distributed_grid.orchestration.resource_sharing_manager import ResourceType, AllocationPriority
 from distributed_grid.orchestration.offloading_detector import OffloadingDetector
 from distributed_grid.orchestration.offloading_executor import OffloadingExecutor
 
@@ -873,6 +874,142 @@ def execute(
             raise click.ClickException(str(e))
     
     asyncio.run(_execute())
+
+
+@cli.group()
+def resource_sharing():
+    """Intelligent resource sharing commands."""
+    pass
+
+
+@resource_sharing.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, path_type=Path),
+    default=Path("config/my-cluster-enhanced.yaml"),
+    help="Path to enhanced cluster configuration file",
+)
+def status(config: Path) -> None:
+    """Show current resource sharing status."""
+    setup_logging()
+
+    async def _show_status():
+        try:
+            cluster_config = ClusterConfig.from_yaml(config)
+            ssh_manager = SSHManager(cluster_config.nodes)
+            orchestrator = ResourceSharingOrchestrator(cluster_config, ssh_manager)
+            
+            await orchestrator.initialize()
+            status = await orchestrator.get_cluster_status()
+            
+            # Overall Status
+            console.print("\n[bold]Resource Sharing Orchestrator Status[/bold]")
+            console.print(f"Sharing Enabled: {'[green]Yes[/green]' if status['resource_sharing_enabled'] else '[red]No[/red]'}")
+            console.print(f"Initialized: {'[green]Yes[/green]' if status['initialized'] else '[red]No[/red]'}")
+            
+            if status.get("resource_sharing"):
+                sharing = status["resource_sharing"]
+                
+                # Allocation Table
+                allocations_table = Table(title="Active Allocations")
+                allocations_table.add_column("ID", style="dim")
+                allocations_table.add_column("Node")
+                allocations_table.add_column("Resource")
+                allocations_table.add_column("Amount", justify="right")
+                allocations_table.add_column("Priority")
+                allocations_table.add_column("Expires", style="yellow")
+                
+                for alloc_id, alloc in sharing.get("active_allocations", {}).items():
+                    allocations_table.add_row(
+                        alloc_id[:8],
+                        alloc["node_id"],
+                        alloc["resource_type"],
+                        str(alloc["amount"]),
+                        alloc["priority"],
+                        alloc["expires_at"]
+                    )
+                console.print(allocations_table)
+
+                # Shared Resources
+                resources_table = Table(title="Shared Resources Pool")
+                resources_table.add_column("Node")
+                resources_table.add_column("Resource")
+                resources_table.add_column("Amount", justify="right")
+                
+                for node, res in sharing.get("shared_resources", {}).items():
+                    for r_type, amt in res.items():
+                        resources_table.add_row(node, r_type, str(amt))
+                console.print(resources_table)
+
+            await orchestrator.stop()
+            await ssh_manager.close_all()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+
+    asyncio.run(_show_status())
+
+
+@resource_sharing.command()
+@click.option("--node", "-n", required=True, help="Node ID to request resources for")
+@click.option("--type", "-t", "resource_type", type=click.Choice(["cpu", "gpu", "memory"]), required=True)
+@click.option("--amount", "-a", type=float, required=True, help="Amount of resource to request")
+@click.option("--priority", "-p", type=click.Choice(["low", "normal", "high", "critical"]), default="normal")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def request(node: str, resource_type: str, amount: float, priority: str, config: Path) -> None:
+    """Request shared resources."""
+    setup_logging()
+
+    async def _request():
+        try:
+            cluster_config = ClusterConfig.from_yaml(config)
+            ssh_manager = SSHManager(cluster_config.nodes)
+            orchestrator = ResourceSharingOrchestrator(cluster_config, ssh_manager)
+            
+            await orchestrator.initialize()
+            allocation_id = await orchestrator.request_resources(
+                node_id=node,
+                resource_type=resource_type,
+                amount=amount,
+                priority=priority
+            )
+            console.print(f"[green]✓[/green] Resource allocated: [bold]{allocation_id}[/bold]")
+            
+            await orchestrator.stop()
+            await ssh_manager.close_all()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+
+    asyncio.run(_request())
+
+
+@resource_sharing.command()
+@click.argument("allocation_id")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def release(allocation_id: str, config: Path) -> None:
+    """Release allocated resources."""
+    setup_logging()
+
+    async def _release():
+        try:
+            cluster_config = ClusterConfig.from_yaml(config)
+            ssh_manager = SSHManager(cluster_config.nodes)
+            orchestrator = ResourceSharingOrchestrator(cluster_config, ssh_manager)
+            
+            await orchestrator.initialize()
+            success = await orchestrator.release_resources(allocation_id)
+            
+            if success:
+                console.print(f"[green]✓[/green] Resources released for allocation: {allocation_id}")
+            else:
+                console.print(f"[red]✗[/red] Failed to release resources for allocation: {allocation_id}")
+            
+            await orchestrator.stop()
+            await ssh_manager.close_all()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+
+    asyncio.run(_release())
 
 
 @offload.command()
