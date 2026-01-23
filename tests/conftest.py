@@ -15,6 +15,48 @@ from distributed_grid.core import GridOrchestrator
 from distributed_grid.utils.logging import setup_logging
 
 
+def get_test_cluster_config() -> ClusterConfig:
+    """Create a baseline cluster config for distributed memory tests."""
+    return ClusterConfig(
+        name="test-cluster",
+        nodes=[
+            NodeConfig(
+                name="gpu-master",
+                host="localhost",
+                user="test",
+                role="master",
+                cpu_count=8,
+                memory_gb=32,
+                gpu_count=1,
+                port=22,
+                tags=["master", "gpu"],
+            ),
+            NodeConfig(
+                name="gpu1",
+                host="worker1",
+                user="test",
+                role="worker",
+                cpu_count=6,
+                memory_gb=16,
+                gpu_count=1,
+                port=22,
+                tags=["worker", "gpu"],
+            ),
+            NodeConfig(
+                name="gpu2",
+                host="worker2",
+                user="test",
+                role="worker",
+                cpu_count=4,
+                memory_gb=8,
+                gpu_count=0,
+                port=22,
+                tags=["worker"],
+            ),
+        ],
+    )
+
+
 @pytest.fixture(scope="session")
 def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
     """Create an instance of the default event loop for the test session."""

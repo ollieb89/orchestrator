@@ -34,6 +34,18 @@ def cli():
     pass
 
 
+@click.group()
+def memory():
+    """Distributed memory management commands."""
+    pass
+
+
+@click.group()
+def boost():
+    """Resource boost management commands."""
+    pass
+
+
 @cli.command()
 @click.option(
     "--config",
@@ -83,6 +95,319 @@ def init(config: Path) -> None:
         yaml.dump(sample_config, f, default_flow_style=False, indent=2)
     
     console.print(f"[green]✓[/green] Configuration initialized at {config}")
+
+
+@memory.command()
+@click.argument("key", type=str)
+@click.argument("data_file", type=click.Path(exists=True))
+@click.option("--node", "-n", help="Preferred node for storage")
+@click.option("--block-id", help="Write to existing block ID instead of allocating new")
+@click.option("--offset", type=int, default=0, help="Offset for writing to existing block")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def store(key: str, data_file: Path, node: str | None, block_id: str | None, offset: int, config: Path) -> None:
+    """Store file content in distributed memory."""
+    setup_logging()
+
+    async def _store():
+        try:
+            from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            import ray
+            
+            # Initialize Ray
+            ray.init(address="auto", namespace="distributed_memory_pool")
+            
+            # Read file content
+            with open(data_file, 'rb') as f:
+                data = f.read()
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            memory_pool = DistributedMemoryPool(cluster_config)
+            await memory_pool.initialize(persistent=True)
+            
+            if block_id:
+                # Write to existing block
+                if block_id not in memory_pool.blocks:
+                    console.print(f"[red]✗[/red] Block '{block_id}' not found")
+                    console.print(f"Use 'grid memory list-objects' to see available blocks")
+                    return
+                
+                # Check if data fits in the block
+                block = memory_pool.blocks[block_id]
+                if offset + len(data) > block.size_bytes:
+                    console.print(f"[red]✗[/red] Data exceeds block size")
+                    console.print(f"Block size: {block.size_bytes} bytes")
+                    console.print(f"Required: {offset + len(data)} bytes")
+                    return
+                
+                # Write data to existing block
+                success = await memory_pool.write(block_id, data, offset)
+                
+                if success:
+                    console.print(f"[green]✓[/green] Stored data in block: [bold]{block_id}[/bold]")
+                    console.print(f"Size: {len(data) / (1024**2):.2f} MB")
+                    console.print(f"Offset: {offset}")
+                    console.print(f"Key: [bold]{key}[/bold] -> Block ID: {block_id}")
+                else:
+                    console.print(f"[red]✗[/red] Failed to write data to block")
+            else:
+                # Allocate new memory block
+                size_bytes = len(data)
+                new_block_id = await memory_pool.allocate(size_bytes, preferred_node=node)
+                
+                if new_block_id:
+                    # Store the block ID mapping for retrieval
+                    success = await memory_pool.write(new_block_id, data)
+                    
+                    if success:
+                        console.print(f"[green]✓[/green] Stored data as block_id: [bold]{new_block_id}[/bold]")
+                        console.print(f"Size: {len(data) / (1024**2):.2f} MB")
+                        console.print(f"Key: [bold]{key}[/bold] -> Block ID: {new_block_id}")
+                        if node:
+                            console.print(f"Preferred node: [bold]{node}[/bold]")
+                        
+                        # Store the key->block_id mapping in Ray's object store for simple lookup
+                        ray.put({key: new_block_id})
+                    else:
+                        console.print(f"[red]✗[/red] Failed to write data to block")
+                else:
+                    console.print(f"[red]✗[/red] Failed to allocate memory block")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.formatexc())
+        finally:
+            ray.shutdown()
+
+    asyncio.run(_store())
+
+
+@memory.command()
+@click.argument("key")
+@click.option("--output", "-o", type=click.Path(), help="Output file (default: stdout)")
+@click.option("--size", "-s", type=int, help="Size to read in bytes (default: all)")
+@click.option("--offset", type=int, default=0, help="Offset to read from (default: 0)")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def retrieve(key: str, output: Path | None, size: int | None, offset: int, config: Path) -> None:
+    """Retrieve data from distributed memory."""
+    setup_logging()
+
+    async def _retrieve():
+        try:
+            from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            import ray
+            
+            # Initialize Ray
+            ray.init(address="auto", namespace="distributed_memory_pool")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            memory_pool = DistributedMemoryPool(cluster_config)
+            await memory_pool.initialize(persistent=True)
+            
+            # For now, we'll use a convention that key is the block_id
+            # In a real implementation, you'd maintain a persistent key->block_id mapping
+            block_id = key
+            
+            # If no size specified, we need to get it from the block
+            if size is None:
+                if block_id in memory_pool.blocks:
+                    size = memory_pool.blocks[block_id].size_bytes
+                else:
+                    console.print(f"[red]✗[/red] Block '{block_id}' not found")
+                    return
+            
+            data = await memory_pool.read(block_id, size, offset)
+            
+            if data is not None:
+                if output:
+                    with open(output, 'wb') as f:
+                        f.write(data)
+                    console.print(f"[green]✓[/green] Retrieved data to: [bold]{output}[/bold]")
+                    console.print(f"Size: {len(data) / (1024**2):.2f} MB")
+                else:
+                    # Print to stdout
+                    console.print(f"[green]✓[/green] Retrieved {len(data)} bytes[/green]")
+                    # Try to decode as string for preview
+                    try:
+                        preview = data[:200].decode('utf-8', errors='replace')
+                        console.print(f"Preview: {preview}...")
+                    except:
+                        console.print(f"Binary data (first 50 bytes: {data[:50]})")
+            else:
+                console.print(f"[red]✗[/red] Block '{block_id}' not found or read failed")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
+        finally:
+            ray.shutdown()
+
+    asyncio.run(_retrieve())
+
+
+@memory.command()
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def list_objects(config: Path) -> None:
+    """List all objects in distributed memory."""
+    setup_logging()
+
+    async def _list_objects():
+        try:
+            from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            import ray
+            
+            # Initialize Ray
+            ray.init(address="auto", namespace="distributed_memory_pool")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            memory_pool = DistributedMemoryPool(cluster_config)
+            await memory_pool.initialize(persistent=True)
+            
+            stats = await memory_pool.get_stats()
+            
+            console.print(f"\n[bold]Distributed Memory Pool Status[/bold]")
+            console.print(f"Total Blocks: {stats['total_blocks']}")
+            console.print(f"Nodes with stores: {len(stats['nodes'])}\n")
+            
+            if stats['nodes']:
+                table = Table(title="Memory Store Status")
+                table.add_column("Node", style="cyan")
+                table.add_column("Blocks", justify="right")
+                table.add_column("Total Size (MB)", justify="right")
+                
+                for node_id, node_stats in stats['nodes'].items():
+                    table.add_row(
+                        node_id,
+                        str(node_stats['blocks_count']),
+                        f"{node_stats['total_mb']:.2f}"
+                    )
+                
+                console.print(table)
+                
+                # Show local blocks
+                if memory_pool.blocks:
+                    console.print("\n[bold]Local Block Registry:[/bold]")
+                    blocks_table = Table()
+                    blocks_table.add_column("Block ID", style="cyan")
+                    blocks_table.add_column("Size (MB)", justify="right")
+                    blocks_table.add_column("Node", style="green")
+                    
+                    for block_id, block in memory_pool.blocks.items():
+                        blocks_table.add_row(
+                            block_id,
+                            f"{block.size_bytes / (1024**2):.2f}",
+                            block.node_id
+                        )
+                    
+                    console.print(blocks_table)
+            else:
+                console.print("[dim]No memory stores active[/dim]")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
+        finally:
+            ray.shutdown()
+
+    asyncio.run(_list_objects())
+
+
+@memory.command()
+@click.argument("size", type=int)
+@click.option("--node", "-n", help="Preferred node for allocation")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def allocate(size: int, node: str | None, config: Path) -> None:
+    """Allocate a distributed memory block."""
+    setup_logging()
+
+    async def _allocate():
+        try:
+            from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            import ray
+            
+            # Initialize Ray
+            ray.init(address="auto", namespace="distributed_memory_pool")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            memory_pool = DistributedMemoryPool(cluster_config)
+            await memory_pool.initialize(persistent=True)
+            
+            # Allocate memory block
+            block_id = await memory_pool.allocate(size, preferred_node=node)
+            
+            if block_id:
+                console.print(f"[green]✓[/green] Allocated memory block")
+                console.print(f"Block ID: [bold]{block_id}[/bold]")
+                console.print(f"Size: {size / (1024**2):.2f} MB")
+                console.print(f"Node: [bold]{memory_pool.blocks[block_id].node_id}[/bold]")
+                
+                # Show usage tip
+                console.print(f"\n[yellow]Usage Tips:[/yellow]")
+                console.print(f"• Store data: poetry run grid memory store <key> <file> --block-id {block_id}")
+                console.print(f"• Retrieve data: poetry run grid memory retrieve {block_id}")
+                console.print(f"• Deallocate: poetry run grid memory deallocate {block_id}")
+            else:
+                console.print(f"[red]✗[/red] Failed to allocate memory block")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
+        finally:
+            ray.shutdown()
+
+    asyncio.run(_allocate())
+
+
+@memory.command()
+@click.argument("block_id")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def deallocate(block_id: str, config: Path) -> None:
+    """Deallocate a distributed memory block."""
+    setup_logging()
+
+    async def _deallocate():
+        try:
+            from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            import ray
+            
+            # Initialize Ray
+            ray.init(address="auto", namespace="distributed_memory_pool")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            memory_pool = DistributedMemoryPool(cluster_config)
+            await memory_pool.initialize(persistent=True)
+            
+            # Check if block exists
+            if block_id not in memory_pool.blocks:
+                console.print(f"[red]✗[/red] Block '{block_id}' not found")
+                console.print(f"Use 'grid memory list-objects' to see available blocks")
+                return
+            
+            # Get block info before deallocation
+            block = memory_pool.blocks[block_id]
+            
+            # Deallocate the block
+            success = await memory_pool.deallocate(block_id)
+            
+            if success:
+                console.print(f"[green]✓[/green] Deallocated memory block")
+                console.print(f"Block ID: [bold]{block_id}[/bold]")
+                console.print(f"Size: {block.size_bytes / (1024**2):.2f} MB")
+                console.print(f"Node: [bold]{block.node_id}[/bold]")
+            else:
+                console.print(f"[red]✗[/red] Failed to deallocate block '{block_id}'")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.formatexc())
+        finally:
+            ray.shutdown()
+
+    asyncio.run(_deallocate())
 
 
 @cli.command()
@@ -1114,10 +1439,151 @@ def release(allocation_id: str, config: Path) -> None:
     asyncio.run(_release())
 
 
-@cli.group()
-def memory():
-    """Distributed memory pool commands."""
-    pass
+@memory.command()
+@click.argument("key", type=str)
+@click.argument("data_file", type=click.Path(exists=True))
+@click.option("--node", "-n", help="Preferred node for storage")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def store(key: str, data_file: Path, node: str | None, config: Path) -> None:
+    """Store file content in distributed memory."""
+    setup_logging()
+
+    async def _store():
+        try:
+            from distributed_grid.memory.distributed_memory_manager import DistributedMemoryManager
+            
+            # Read file content
+            with open(data_file, 'rb') as f:
+                data = f.read()
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            manager = DistributedMemoryManager(cluster_config)
+            await manager.initialize()
+            
+            success = await manager.store(key, data, preferred_node=node)
+            
+            if success:
+                console.print(f"[green]✓[/green] Stored data as key: [bold]{key}[/bold]")
+                console.print(f"Size: {len(data) / (1024**2):.2f} MB")
+                if node:
+                    console.print(f"Preferred node: [bold]{node}[/bold]")
+            else:
+                console.print(f"[red]✗[/red] Failed to store data")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.formatexc())
+
+    asyncio.run(_store())
+
+
+@memory.command()
+@click.argument("key")
+@click.option("--output", "-o", type=click.Path(), help="Output file (default: stdout)")
+@click.option("--size", "-s", type=int, help="Size to read in bytes (default: all)")
+@click.option("--offset", type=int, default=0, help="Offset to read from (default: 0)")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def retrieve(key: str, output: Path | None, size: int | None, offset: int, config: Path) -> None:
+    """Retrieve data from distributed memory."""
+    setup_logging()
+
+    async def _retrieve():
+        try:
+            from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+            import ray
+            
+            # Initialize Ray
+            ray.init(address="auto", namespace="distributed_memory_pool")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            memory_pool = DistributedMemoryPool(cluster_config)
+            await memory_pool.initialize(persistent=True)
+            
+            # For now, we'll use a convention that key is the block_id
+            # In a real implementation, you'd maintain a persistent key->block_id mapping
+            block_id = key
+            
+            # If no size specified, we need to get it from the block
+            if size is None:
+                if block_id in memory_pool.blocks:
+                    size = memory_pool.blocks[block_id].size_bytes
+                else:
+                    console.print(f"[red]✗[/red] Block '{block_id}' not found")
+                    return
+            
+            data = await memory_pool.read(block_id, size, offset)
+            
+            if data is not None:
+                if output:
+                    with open(output, 'wb') as f:
+                        f.write(data)
+                    console.print(f"[green]✓[/green] Retrieved data to: [bold]{output}[/bold]")
+                    console.print(f"Size: {len(data) / (1024**2):.2f} MB")
+                else:
+                    # Print to stdout
+                    console.print(f"[green]✓[/green] Retrieved {len(data)} bytes[/green]")
+                    # Try to decode as string for preview
+                    try:
+                        preview = data[:200].decode('utf-8', errors='replace')
+                        console.print(f"Preview: {preview}...")
+                    except:
+                        console.print(f"Binary data (first 50 bytes: {data[:50]})")
+            else:
+                console.print(f"[red]✗[/red] Block '{block_id}' not found or read failed")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
+        finally:
+            ray.shutdown()
+
+    asyncio.run(_retrieve())
+
+@memory.command()
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), default=Path("config/my-cluster-enhanced.yaml"))
+def list_objects(config: Path) -> None:
+    """List all objects in distributed memory."""
+    setup_logging()
+
+    async def _list_objects():
+        try:
+            from distributed_grid.memory.distributed_memory_manager import DistributedMemoryManager
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            manager = DistributedMemoryManager(cluster_config)
+            await manager.initialize()
+            
+            stats = await manager.get_stats()
+            
+            console.print(f"\nDistributed Memory Objects")
+            console.print(f"Total Objects: {stats['total_objects']}")
+            console.print(f"Total Size: {stats['total_mb']:.2f} MB\n")
+            
+            if stats['objects']:
+                table = Table(title="Stored Objects")
+                table.add_column("Key", style="cyan")
+                table.add_column("Size (MB)", justify="right")
+                table.add_column("Created At", justify="center")
+                table.add_column("Node Hint", style="green")
+                
+                for obj in stats['objects']:
+                    table.add_row(
+                        obj['key'],
+                        f"{obj['size_bytes / (1024 * 1024)']:.2f}",
+                        obj['created_at'][:19],  # Remove microseconds
+                        obj['node_hint'] or "any"
+                    )
+                
+                console.print(table)
+            else:
+                console.print("[dim]No objects stored[/dim]")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+
+    asyncio.run(_list_objects())
 
 
 @memory.command()
@@ -1937,8 +2403,253 @@ def status(config: Path) -> None:
     asyncio.run(_show_status())
 
 
+@boost.command()
+@click.argument("target_node", type=str)
+@click.argument("resource_type", type=click.Choice(["cpu", "gpu", "memory"], case_sensitive=False))
+@click.argument("amount", type=float)
+@click.option("--priority", type=click.Choice(["low", "normal", "high", "critical"], case_sensitive=False), 
+              default="normal", help="Request priority")
+@click.option("--duration", type=float, help="Duration in seconds (default: 1 hour)")
+@click.option("--source", type=str, help="Preferred source node")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), 
+              default=Path("config/my-cluster-enhanced.yaml"))
+def request(target_node: str, resource_type: str, amount: float, priority: str, 
+           duration: float | None, source: str | None, config: Path) -> None:
+    """Request a resource boost for a node.
+    
+    Examples:
+        grid boost request gpu-master cpu 2.0 --priority high
+        grid boost request gpu-master gpu 1 --duration 1800
+        grid boost request gpu-master memory 4.0 --source gpu2
+    """
+    setup_logging()
+    
+    async def _request():
+        try:
+            import ray
+            from distributed_grid.orchestration.resource_boost_manager import (
+                ResourceBoostManager, 
+                ResourceBoostRequest,
+                ResourceType,
+                AllocationPriority
+            )
+            from distributed_grid.monitoring.resource_metrics import ResourceMetricsCollector
+            from distributed_grid.orchestration.resource_sharing_manager import ResourceSharingManager
+            
+            # Initialize Ray
+            if not ray.is_initialized():
+                ray.init(address="auto")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            
+            # Initialize components
+            metrics_collector = ResourceMetricsCollector(cluster_config)
+            await metrics_collector.start()
+            
+            resource_sharing_manager = ResourceSharingManager(
+                cluster_config=cluster_config,
+                metrics_collector=metrics_collector
+            )
+            await resource_sharing_manager.start()
+            
+            boost_manager = ResourceBoostManager(
+                cluster_config=cluster_config,
+                metrics_collector=metrics_collector,
+                resource_sharing_manager=resource_sharing_manager
+            )
+            await boost_manager.initialize()
+            
+            # Create the request
+            request = ResourceBoostRequest(
+                target_node=target_node,
+                resource_type=ResourceType[resource_type.upper()],
+                amount=amount,
+                priority=AllocationPriority[priority.upper()],
+                duration_seconds=duration,
+                preferred_source=source
+            )
+            
+            # Request the boost
+            boost_id = await boost_manager.request_boost(request)
+            
+            if boost_id:
+                console.print(f"[green]✓[/green] Resource boost requested successfully")
+                console.print(f"Boost ID: [bold]{boost_id}[/bold]")
+                console.print(f"Target: {target_node}")
+                console.print(f"Resource: {resource_type.upper()} x{amount}")
+                console.print(f"Priority: {priority}")
+                if duration:
+                    console.print(f"Duration: {duration} seconds")
+                if source:
+                    console.print(f"Source: {source}")
+            else:
+                console.print("[red]✗[/red] Failed to request resource boost")
+                console.print("Possible reasons:")
+                console.print("• No nodes have sufficient available resources")
+                console.print("• Target node not found in cluster")
+                console.print("• Resource sharing not enabled")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
+    
+    asyncio.run(_request())
+
+
+@boost.command()
+@click.argument("boost_id", type=str)
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), 
+              default=Path("config/my-cluster-enhanced.yaml"))
+def release(boost_id: str, config: Path) -> None:
+    """Release an active resource boost.
+    
+    Example:
+        grid boost release <boost-id>
+    """
+    setup_logging()
+    
+    async def _release():
+        try:
+            import ray
+            from distributed_grid.orchestration.resource_boost_manager import ResourceBoostManager
+            from distributed_grid.monitoring.resource_metrics import ResourceMetricsCollector
+            from distributed_grid.orchestration.resource_sharing_manager import ResourceSharingManager
+            
+            # Initialize Ray
+            if not ray.is_initialized():
+                ray.init(address="auto")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            
+            # Initialize components
+            metrics_collector = ResourceMetricsCollector(cluster_config)
+            await metrics_collector.start()
+            
+            resource_sharing_manager = ResourceSharingManager(
+                cluster_config=cluster_config,
+                metrics_collector=metrics_collector
+            )
+            
+            boost_manager = ResourceBoostManager(
+                cluster_config=cluster_config,
+                metrics_collector=metrics_collector,
+                resource_sharing_manager=resource_sharing_manager
+            )
+            await boost_manager.initialize()
+            
+            # Release the boost
+            success = await boost_manager.release_boost(boost_id)
+            
+            if success:
+                console.print(f"[green]✓[/green] Resource boost released successfully")
+                console.print(f"Boost ID: {boost_id}")
+            else:
+                console.print(f"[red]✗[/red] Failed to release boost {boost_id}")
+                console.print("Boost not found or already released")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+    
+    asyncio.run(_release())
+
+
+@boost.command()
+@click.option("--node", type=str, help="Filter by target node")
+@click.option("--config", "-c", type=click.Path(exists=True, path_type=Path), 
+              default=Path("config/my-cluster-enhanced.yaml"))
+def status(node: str | None, config: Path) -> None:
+    """Show resource boost status.
+    
+    Examples:
+        grid boost status
+        grid boost status --node gpu-master
+    """
+    setup_logging()
+    
+    async def _status():
+        try:
+            import ray
+            from distributed_grid.orchestration.resource_boost_manager import ResourceBoostManager
+            from distributed_grid.monitoring.resource_metrics import ResourceMetricsCollector
+            from distributed_grid.orchestration.resource_sharing_manager import ResourceSharingManager
+            from rich.table import Table
+            
+            # Initialize Ray
+            if not ray.is_initialized():
+                ray.init(address="auto")
+            
+            cluster_config = ClusterConfig.from_yaml(config)
+            
+            # Initialize components
+            metrics_collector = ResourceMetricsCollector(cluster_config)
+            await metrics_collector.start()
+            
+            resource_sharing_manager = ResourceSharingManager(
+                cluster_config=cluster_config,
+                metrics_collector=metrics_collector
+            )
+            await resource_sharing_manager.start()
+            
+            boost_manager = ResourceBoostManager(
+                cluster_config=cluster_config,
+                metrics_collector=metrics_collector,
+                resource_sharing_manager=resource_sharing_manager
+            )
+            await boost_manager.initialize()
+            
+            # Get status
+            boost_status = await boost_manager.get_boost_status()
+            active_boosts = await boost_manager.get_active_boosts(target_node=node)
+            
+            console.print("\n[bold]Resource Boost Status[/bold]\n")
+            
+            # Summary
+            console.print(f"Total Active Boosts: {boost_status['total_active_boosts']}")
+            
+            if boost_status['boosted_resources']:
+                console.print("\n[bold]Boosted Resources by Type:[/bold]")
+                for rtype, amount in boost_status['boosted_resources'].items():
+                    console.print(f"  {rtype}: {amount}")
+            
+            # Active boosts table
+            if active_boosts:
+                console.print("\n[bold]Active Boosts:[/bold]")
+                table = Table()
+                table.add_column("Boost ID", style="cyan")
+                table.add_column("Source", justify="center")
+                table.add_column("Target", justify="center")
+                table.add_column("Resource", justify="center")
+                table.add_column("Amount", justify="right")
+                table.add_column("Allocated", justify="center")
+                table.add_column("Expires", justify="center")
+                
+                for boost in active_boosts:
+                    expires = boost.expires_at.strftime("%Y-%m-%d %H:%M:%S") if boost.expires_at else "Never"
+                    table.add_row(
+                        boost.boost_id[:8] + "...",
+                        boost.source_node,
+                        boost.target_node,
+                        boost.resource_type.value,
+                        str(boost.amount),
+                        boost.allocated_at.strftime("%H:%M:%S"),
+                        expires
+                    )
+                
+                console.print(table)
+            else:
+                console.print("\n[dim]No active boosts[/dim]")
+                
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+    
+    asyncio.run(_status())
+
+
 def main() -> None:
     """Entry point for the CLI."""
+    cli.add_command(memory)
+    cli.add_command(boost)
     cli()
 
 

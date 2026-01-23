@@ -11,6 +11,7 @@ Optimized distributed GPU cluster orchestration tool built with Python 3.11+.
 
 - **Distributed Execution**: Run commands across multiple GPU nodes simultaneously
 - **Intelligent Scheduling**: Smart node selection based on GPU utilization and availability
+- **Resource Boosting**: Dynamically borrow CPU, GPU, and memory resources from worker nodes
 - **Health Monitoring**: Real-time cluster health checks and metrics collection
 - **Modern CLI**: Beautiful command-line interface with rich output
 - **Async Architecture**: Built for performance with asyncio and async patterns
@@ -91,12 +92,39 @@ pip install -e ".[dev]"
 - `grid run <command>` - Execute a command on the cluster
 - `grid config` - Generate a sample configuration file
 
+### Resource Boost Commands
+
+- `grid boost request <node> <resource> <amount>` - Request additional resources
+- `grid boost release <boost-id>` - Release an active resource boost
+- `grid boost status` - Show current resource boost status
+
+#### Resource Boost Examples
+
+```bash
+# Request 2 CPU cores with high priority
+grid boost request gpu-master cpu 2.0 --priority high
+
+# Request 1 GPU for 30 minutes
+grid boost request gpu-master gpu 1 --duration 1800
+
+# Request 8GB memory from a specific worker
+grid boost request gpu-master memory 8.0 --source gpu2
+
+# Check active boosts
+grid boost status
+
+# Release a boost
+grid boost release req_1234567890_gpu-master
+```
+
 ### Options
 
 - `--config, -c` - Path to configuration file (default: `config/cluster_config.yaml`)
 - `--nodes, -n` - Number of nodes to use
 - `--gpus, -g` - Number of GPUs per node
 - `--verbose, -v` - Enable verbose output
+
+For detailed documentation on resource boosting, see [Resource Boost Manager Guide](docs/resource_boost_manager_guide.md).
 
 ## Configuration
 

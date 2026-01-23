@@ -522,6 +522,32 @@ class ResourceMetricsCollector:
             predicted_usage_5min=min(100, max(0, predicted_5min)),
             predicted_usage_15min=min(100, max(0, predicted_15min)),
         )
+
+    def get_memory_pressure_score(self, node_id: str) -> float:
+        """Calculate memory pressure score (0-1, higher = more pressure)."""
+        try:
+            snapshot = self._latest_snapshot.get(node_id)
+            if not snapshot:
+                return 0.5
+
+            memory_total = float(snapshot.memory_total)
+            if memory_total <= 0:
+                return 0.5
+
+            memory_usage_percent = snapshot.memory_used / memory_total
+
+            if memory_usage_percent > 0.8:
+                return min(1.0, (memory_usage_percent - 0.8) * 8)
+            if memory_usage_percent > 0.6:
+                return (memory_usage_percent - 0.6) * 2.5
+            return 0.1
+        except Exception as exc:
+            logger.warning(
+                "Failed to calculate memory pressure",
+                node=node_id,
+                error=str(exc),
+            )
+            return 0.5
         
     def _calculate_trend(self, snapshots: List[ResourceSnapshot], resource_type: ResourceType) -> float:
         """Calculate trend as percentage change per minute."""

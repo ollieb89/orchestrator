@@ -214,7 +214,7 @@ class EnhancedOffloadingExecutor:
         gpu_req = 1 if process.gpu_memory_mb > 0 else 0
         
         # Adjust based on process type
-        if process.process_type == ProcessType.ML_TRAINING:
+        if process.process_type == ProcessType.TRAINING:
             cpu_req *= 2
             memory_req *= 2
             gpu_req = max(gpu_req, 1)
@@ -226,14 +226,17 @@ class EnhancedOffloadingExecutor:
             memory_req = max(memory_req, 2048)  # At least 2GB for inference
             
         # Estimate duration based on process age and type
-        if process.age_seconds > 0:
+        age_seconds = 0.0
+        if process.start_time:
+            age_seconds = (datetime.now(UTC) - process.start_time).total_seconds()
+        if age_seconds > 0:
             # Long-running processes likely need more resources
-            if process.age_seconds > 300:  # 5 minutes
+            if age_seconds > 300:  # 5 minutes
                 memory_req *= 1.5
                 
         # Determine priority
         priority = TaskPriority.NORMAL
-        if process.process_type in [ProcessType.ML_TRAINING, ProcessType.CRITICAL]:
+        if process.process_type in [ProcessType.TRAINING, ProcessType.COMPUTE_INTENSIVE]:
             priority = TaskPriority.HIGH
             
         return ResourceAnalysis(
@@ -242,7 +245,7 @@ class EnhancedOffloadingExecutor:
             memory_requirement_mb=memory_req,
             gpu_requirement=gpu_req,
             priority=priority,
-            can_share_resources=gpu_req == 0 or process.process_type != ProcessType.ML_TRAINING,
+            can_share_resources=gpu_req == 0 or process.process_type != ProcessType.TRAINING,
         )
         
     async def _make_offloading_decision(
@@ -267,6 +270,10 @@ class EnhancedOffloadingExecutor:
                 master_snapshot.memory_available >= analysis.memory_requirement_mb * 1024 * 1024 and
                 master_snapshot.gpu_available >= analysis.gpu_requirement
             )
+        memory_pressure_offload = await self._should_offload_for_memory(
+            "gpu-master",
+            analysis.memory_requirement_mb / 1024,
+        )
             
         # Decision logic based on mode
         if self.mode == OffloadingMode.OFFLOAD_ONLY:
@@ -289,8 +296,12 @@ class EnhancedOffloadingExecutor:
             # Analyze cluster pressure
             avg_pressure = cluster_summary.get("node_pressure_scores", {})
             overall_pressure = sum(avg_pressure.values()) / len(avg_pressure) if avg_pressure else 0
-            
-            if master_has_resources and overall_pressure < 0.7:
+
+            if memory_pressure_offload:
+                decision.mode = OffloadingMode.OFFLOAD_ONLY
+                decision.target_node = recommendation.target_node
+                decision.reasoning.append("Memory pressure high, offloading to worker")
+            elif master_has_resources and overall_pressure < 0.7:
                 # Cluster not under pressure, use master resources
                 decision.mode = OffloadingMode.SHARE_AND_OFFLOAD
                 decision.target_node = "gpu-master"
@@ -315,6 +326,31 @@ class EnhancedOffloadingExecutor:
             decision.confidence = 0.7
             
         return decision
+
+    async def _should_offload_for_memory(self, node_id: str, estimated_memory_gb: float) -> bool:
+        """Determine if task should offload due to memory pressure."""
+        pressure = self.metrics_collector.get_memory_pressure_score(node_id)
+        snapshot = self.metrics_collector.get_latest_snapshot(node_id)
+        if not snapshot:
+            return True
+
+        available_memory_gb = (snapshot.memory_total - snapshot.memory_used) / (1024**3)
+        should_offload = (
+            estimated_memory_gb > available_memory_gb
+            or pressure > 0.8
+            or available_memory_gb < 2.0
+        )
+
+        if should_offload:
+            logger.info(
+                "Memory offloading recommended",
+                node=node_id,
+                required_gb=estimated_memory_gb,
+                available_gb=available_memory_gb,
+                pressure=pressure,
+            )
+
+        return should_offload
         
     async def _execute_with_shared_resources(
         self,

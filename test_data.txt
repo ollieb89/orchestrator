@@ -1,0 +1,1 @@
+Hello from gpu-master! This data is stored in the 10GB memory block on gpu2.

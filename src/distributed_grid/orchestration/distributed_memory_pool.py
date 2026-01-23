@@ -77,6 +77,9 @@ class DistributedMemoryStore:
 class DistributedMemoryPool:
     """Manages distributed memory across cluster nodes."""
     
+    # Explicit namespace for detached actors
+    ACTOR_NAMESPACE = "distributed_memory_pool"
+    
     def __init__(self, cluster_config):
         self.cluster_config = cluster_config
         self.memory_stores: Dict[str, ray.ActorHandle] = {}
@@ -129,12 +132,14 @@ class DistributedMemoryPool:
                 actor_name = f"memory_store_{node.name}"
                 store = None
                 try:
-                    store = ray.get_actor(actor_name)
+                    # Try to get existing actor with explicit namespace
+                    store = ray.get_actor(actor_name, namespace=self.ACTOR_NAMESPACE)
                     logger.info("Connected to existing memory store", node_name=node.name)
                 except ValueError:
                     # Create new actor if not exists
                     store = DistributedMemoryStore.options(
                         name=actor_name,
+                        namespace=self.ACTOR_NAMESPACE,
                         max_concurrency=10,
                         lifetime="detached" if persistent else None,
                         # Pin to node using actual Ray node ID

@@ -18,6 +18,9 @@ from distributed_grid.orchestration.resource_sharing_types import (
 
 logger = logging.getLogger(__name__)
 
+# Explicit namespace for detached actors
+ACTOR_NAMESPACE = "resource_sharing_state"
+
 
 @ray.remote
 class ResourceSharingStateActor:
@@ -138,11 +141,12 @@ def get_state_actor() -> ray.actor.ActorHandle:
     if _state_actor is None:
         # Try to get existing actor
         try:
-            _state_actor = ray.get_actor("ResourceSharingStateActor")
+            _state_actor = ray.get_actor("ResourceSharingStateActor", namespace=ACTOR_NAMESPACE)
         except ValueError:
             # Actor doesn't exist, create a new detached one
             _state_actor = ResourceSharingStateActor.options(
                 lifetime="detached",
+                namespace=ACTOR_NAMESPACE,
                 name="ResourceSharingStateActor",
                 max_concurrency=100,
             ).remote()
