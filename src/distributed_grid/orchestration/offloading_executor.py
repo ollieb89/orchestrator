@@ -467,6 +467,7 @@ if __name__ == "__main__":
         
         durations = []
         
+        # Process in-memory tasks
         for task in self._task_history:
             if task.status == OffloadingStatus.COMPLETED:
                 stats["completed_tasks"] += 1
@@ -486,6 +487,41 @@ if __name__ == "__main__":
             if task.started_at and task.completed_at:
                 duration = (task.completed_at - task.started_at).total_seconds()
                 durations.append(duration)
+        
+        # Query Ray job API for historical jobs
+        if self._job_client:
+            try:
+                # Get all jobs from Ray
+                jobs = self._job_client.list_jobs()
+                
+                # Filter jobs that have our metadata (indicating they are offloading tasks)
+                offloading_jobs = [
+                    job for job in jobs 
+                    if job.metadata and "task_id" in job.metadata
+                ]
+                
+                # Add historical jobs not already in memory
+                existing_task_ids = {task.task_id for task in self._task_history}
+                
+                for job in offloading_jobs:
+                    if job.job_id not in existing_task_ids:
+                        # Count by status
+                        if job.status == JobStatus.SUCCEEDED:
+                            stats["completed_tasks"] += 1
+                        elif job.status == JobStatus.FAILED:
+                            stats["failed_tasks"] += 1
+                        elif job.status == JobStatus.STOPPED:
+                            stats["cancelled_tasks"] += 1
+                        
+                        # Extract target node from metadata
+                        target_node = job.metadata.get("target_node", "unknown")
+                        stats["by_target_node"][target_node] = stats["by_target_node"].get(target_node, 0) + 1
+                        
+                        # Update total count
+                        stats["total_tasks"] += 1
+                        
+            except Exception as e:
+                logger.warning("Failed to query Ray job history", error=str(e))
         
         if durations:
             stats["average_duration"] = sum(durations) / len(durations)
