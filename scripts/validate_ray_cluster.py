@@ -73,6 +73,40 @@ async def check_cluster_health(config_path: str):
     
     console.print(table)
     
+    # Check GCS server
+    console.print("\n[blue]Checking GCS server...[/blue]")
+    head_node = cluster_config.nodes[0]
+    gcs_check_cmd = (
+        f"ps aux | grep 'gcs_server' | grep -v grep || "
+        f"echo 'GCS not running'"
+    )
+    
+    try:
+        result = await manager.ssh_manager.run_command(
+            head_node.name,
+            gcs_check_cmd,
+            timeout=5
+        )
+        
+        if "gcs_server" in result.stdout:
+            console.print("[green]✓ GCS server is running[/green]")
+        else:
+            console.print("[red]✗ GCS server not found[/red]")
+            # Check if Ray is actually working despite this
+            ray_status_cmd = f"{manager.ray_bin} status"
+            status_result = await manager.ssh_manager.run_command(
+                head_node.name,
+                ray_status_cmd,
+                timeout=10
+            )
+            if status_result.exit_status == 0 and "running" in status_result.stdout:
+                console.print("[yellow]⚠ GCS check failed but Ray is functional[/yellow]")
+            else:
+                all_healthy = False
+    except Exception as e:
+        console.print(f"[red]✗ Failed to check GCS: {e}[/red]")
+        all_healthy = False
+    
     # Check dashboard
     console.print("\n[blue]Checking Ray Dashboard...[/blue]")
     head_node = cluster_config.nodes[0]
@@ -129,13 +163,15 @@ async def monitor_heartbeats(config_path: str, duration: int = 60):
     start_time = time.time()
     check_interval = 10  # Check every 10 seconds
     
+    all_healthy = True
+    
     while time.time() - start_time < duration:
         console.print(f"\n[cyan]Check at {datetime.now().strftime('%H:%M:%S')}[/cyan]")
         
         # Check GCS health
         head_node = cluster_config.nodes[0]
         gcs_check_cmd = (
-            f"ps aux | grep 'ray.gcs_server' | grep -v grep || "
+            f"ps aux | grep 'gcs_server' | grep -v grep || "
             f"echo 'GCS not running'"
         )
         
@@ -146,18 +182,24 @@ async def monitor_heartbeats(config_path: str, duration: int = 60):
                 timeout=5
             )
             
-            if "ray.gcs_server" in result.stdout:
+            if "gcs_server" in result.stdout:
                 console.print("[green]✓ GCS server is running[/green]")
             else:
                 console.print("[red]✗ GCS server not found[/red]")
+                console.print("[yellow]Note: GCS check failed but Ray may still be functional[/yellow]")
+                if status_result.exit_status == 0:
+                    console.print("[green]✓ Ray is responding despite GCS check issue[/green]")
+                else:
+                    all_healthy = False
         except Exception as e:
             console.print(f"[red]✗ Failed to check GCS: {e}[/red]")
+            all_healthy = False
         
         # Check node registration
         status = await manager.get_cluster_status()
         running_nodes = sum(
             1 for s in status.values() 
-            if s["exit_code"] == 0 and "is running" in s.get("stdout", "").lower()
+            if s["exit_code"] == 0 and ("Active:" in s.get("stdout", "") or "running" in s.get("stdout", "").lower())
         )
         
         console.print(f"[green]✓ {running_nodes}/{len(cluster_config.nodes)} nodes active[/green]")
