@@ -169,6 +169,44 @@ class ResourceSharingManager:
                 "MEMORY": resources.get(ResourceType.MEMORY, 0.0),
             }
         self._persistence.save_shared_resources(serializable)
+
+    def _compute_live_shared_resources(
+        self,
+        snapshots: Dict[str, ResourceSnapshot],
+        threshold: float = 0.2,
+    ) -> Dict[str, Dict[ResourceType, float]]:
+        shared_resources: Dict[str, Dict[ResourceType, float]] = {}
+
+        # Start from current availability snapshots (best-effort).
+        for node_id, snapshot in snapshots.items():
+            # Share only a portion of available resources to avoid starving the donor.
+            cpu_shareable = max(0.0, snapshot.cpu_available * (1 - threshold))
+            gpu_shareable = max(0.0, float(snapshot.gpu_available) * (1 - threshold))
+            mem_shareable_gb = max(0.0, (snapshot.memory_available / (1024**3)) * (1 - threshold))
+
+            shared_resources[node_id] = {
+                ResourceType.CPU: cpu_shareable,
+                ResourceType.GPU: gpu_shareable,
+                ResourceType.MEMORY: mem_shareable_gb,
+            }
+
+        # Subtract currently active allocations from the donor (source) node so pool reflects remaining shareable.
+        for alloc in self._active_allocations:
+            if alloc.source_node not in shared_resources:
+                continue
+            current = shared_resources[alloc.source_node].get(alloc.resource_type, 0.0)
+            shared_resources[alloc.source_node][alloc.resource_type] = max(0.0, current - float(alloc.amount))
+
+        return shared_resources
+
+    @staticmethod
+    def _normalize_resource_type(raw: Any) -> str:
+        if raw is None:
+            return ""
+        value = str(raw)
+        if "." in value:
+            value = value.split(".")[-1]
+        return value.upper()
             
     async def _rebalancing_loop(self) -> None:
         """Main rebalancing loop."""
@@ -195,6 +233,10 @@ class ResourceSharingManager:
         
         # Process pending requests
         await self._process_resource_requests(snapshots)
+
+        # Keep shared resource pool up-to-date for status/inspection (and persist as fallback).
+        self._shared_resources = self._compute_live_shared_resources(snapshots)
+        self._save_shared_resources()
         
         # Proactively rebalance based on policy
         if self.policy in [SharingPolicy.AGGRESSIVE, SharingPolicy.PREDICTIVE]:
@@ -228,12 +270,14 @@ class ResourceSharingManager:
             
             self._active_allocations = []
             for alloc_data in persisted_allocations:
+                resource_type_raw = alloc_data.get("resource_type")
+                resource_type_value = self._normalize_resource_type(resource_type_raw)
                 allocation = ResourceAllocation(
                     allocation_id=alloc_data["allocation_id"],
                     request_id=alloc_data["request_id"],
                     source_node=alloc_data["source_node"],
                     target_node=alloc_data["target_node"],
-                    resource_type=ResourceType(alloc_data["resource_type"]),
+                    resource_type=ResourceType(resource_type_value),
                     amount=alloc_data["amount"],
                     allocated_at=datetime.fromisoformat(alloc_data["allocated_at"]),
                     lease_duration=None,  # Could be restored from data if needed
@@ -578,37 +622,66 @@ class ResourceSharingManager:
                 "request_id": alloc.request_id,
                 "source_node": alloc.source_node,
                 "target_node": alloc.target_node,
-                "resource_type": str(alloc.resource_type),
+                "resource_type": alloc.resource_type.value,
                 "amount": alloc.amount,
                 "allocated_at": alloc.allocated_at.isoformat(),
             })
         self._persistence.save_allocations(serializable)
     def get_resource_status(self) -> Dict[str, Any]:
         """Get the current status of resource sharing."""
-        # Load from persistence for latest state
+        # Load allocations from persistence for latest state.
         persisted_allocations = self._persistence.load_allocations()
         persisted_resources = self._persistence.load_shared_resources()
+
+        # Refresh active allocations from persistence (best-effort) to keep derived views current.
+        self._active_allocations = []
+        from distributed_grid.monitoring.resource_metrics import ResourceType
+        from distributed_grid.orchestration.resource_sharing_types import ResourceAllocation
+        for alloc_data in persisted_allocations:
+            resource_type_value = self._normalize_resource_type(alloc_data.get("resource_type"))
+            try:
+                resource_type = ResourceType(resource_type_value)
+            except Exception:
+                continue
+
+            self._active_allocations.append(
+                ResourceAllocation(
+                    allocation_id=alloc_data["allocation_id"],
+                    request_id=alloc_data["request_id"],
+                    source_node=alloc_data["source_node"],
+                    target_node=alloc_data["target_node"],
+                    resource_type=resource_type,
+                    amount=alloc_data["amount"],
+                    allocated_at=datetime.fromisoformat(alloc_data["allocated_at"]),
+                    lease_duration=None,
+                )
+            )
         
         # Transform allocations to expected format
         active_allocations = {}
         for alloc in persisted_allocations:
+            resource_type_value = self._normalize_resource_type(alloc.get("resource_type"))
             active_allocations[alloc["allocation_id"]] = {
                 "node_id": alloc["target_node"],
-                "resource_type": alloc["resource_type"],
+                "resource_type": resource_type_value,
                 "amount": alloc["amount"],
                 "priority": "normal",
                 "expires_at": "never",  # Could be restored from data if needed
             }
         
-        # Convert shared resources back to ResourceType enums
-        shared_resources = {}
-        from distributed_grid.monitoring.resource_metrics import ResourceType
-        for node_id, resources in persisted_resources.items():
-            shared_resources[node_id] = {
-                ResourceType.CPU: resources.get("CPU", 0.0),
-                ResourceType.GPU: resources.get("GPU", 0.0),
-                ResourceType.MEMORY: resources.get("MEMORY", 0.0),
-            }
+        # Prefer live metrics-derived pool if available; otherwise fall back to persisted pool.
+        snapshots = self.metrics_collector.get_all_latest_snapshots()
+        if snapshots:
+            shared_resources = self._compute_live_shared_resources(snapshots)
+            self._save_shared_resources()
+        else:
+            shared_resources = {}
+            for node_id, resources in persisted_resources.items():
+                shared_resources[node_id] = {
+                    ResourceType.CPU: resources.get("CPU", 0.0),
+                    ResourceType.GPU: resources.get("GPU", 0.0),
+                    ResourceType.MEMORY: resources.get("MEMORY", 0.0),
+                }
         
         return {
             "policy": self.policy,
