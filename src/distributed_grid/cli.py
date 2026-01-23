@@ -1028,6 +1028,56 @@ def cancel(task_id: str, config: Path, ray_dashboard: str) -> None:
     asyncio.run(_cancel())
 
 
+@offload.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(path_type=Path),
+    default=Path("config/my-cluster.yaml"),
+    help="Path to cluster configuration file",
+)
+@click.option(
+    "--interval",
+    "-i",
+    default=30,
+    help="Monitoring interval in seconds",
+)
+@click.option(
+    "--duration",
+    "-d",
+    type=int,
+    help="Monitoring duration in seconds (optional)",
+)
+@click.option(
+    "--auto-heal",
+    is_flag=True,
+    help="Enable automatic healing of failed nodes",
+)
+@click.option(
+    "--alert-threshold",
+    default=3,
+    help="Number of consecutive failures before alert",
+)
+def monitor(config: Path, interval: int, duration: Optional[int], auto_heal: bool, alert_threshold: int) -> None:
+    """Monitor Ray cluster heartbeat health."""
+    setup_logging()
+    
+    # Import and run the heartbeat monitor
+    import sys
+    from pathlib import Path
+    
+    # Add the project root to the path
+    project_root = Path(__file__).parent.parent.parent
+    sys.path.insert(0, str(project_root))
+    
+    from scripts.monitor_heartbeat import HeartbeatMonitor
+    
+    monitor = HeartbeatMonitor(config)
+    monitor.alert_threshold = alert_threshold
+    
+    asyncio.run(monitor.start_monitoring(interval, duration, auto_heal))
+
+
 def main() -> None:
     """Entry point for the CLI."""
     cli()
