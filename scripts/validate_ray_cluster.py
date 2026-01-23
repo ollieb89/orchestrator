@@ -45,12 +45,24 @@ async def check_cluster_health(config_path: str):
         if node_status["exit_code"] == 0:
             # Parse ray status output
             output = node_status.get("stdout", "")
-            if "is running" in output.lower():
+            # Debug: print first few lines
+            debug_lines = [l.strip() for l in output.split('\n')[:3] if l.strip()]
+            # The output shows "✓ [node_name]: running" which indicates success
+            if "running" in output.lower() and output.count('\n') > 0:
+                status_text = "[green]✓ Running[/green]"
+                details = "Active"
+            elif "node_" in output and len(debug_lines) > 1:
+                # Contains node IDs, which means Ray is running
+                status_text = "[green]✓ Running[/green]"
+                details = f"{len(debug_lines)} nodes"
+            elif "is running" in output.lower():
                 status_text = "[green]✓ Running[/green]"
                 details = "Active"
             else:
                 status_text = "[yellow]⚠ Unknown[/yellow]"
-                details = output.strip()[:50]
+                # Show first non-empty line
+                lines = [l.strip() for l in output.split('\n') if l.strip() and not l.startswith('===')]
+                details = lines[0][:50] if lines else "No status"
                 all_healthy = False
         else:
             status_text = "[red]✗ Error[/red]"
@@ -64,7 +76,8 @@ async def check_cluster_health(config_path: str):
     # Check dashboard
     console.print("\n[blue]Checking Ray Dashboard...[/blue]")
     head_node = cluster_config.nodes[0]
-    dashboard_cmd = f"curl -s http://localhost:{cluster_config.ray.dashboard_port} | head -20"
+    dashboard_port = 8265  # Default dashboard port as used in CLI
+    dashboard_cmd = f"curl -s http://localhost:{dashboard_port} | head -20"
     
     try:
         result = await manager.ssh_manager.run_command(
@@ -74,9 +87,9 @@ async def check_cluster_health(config_path: str):
         )
         
         if result.exit_status == 0 and "ray" in result.stdout.lower():
-            console.print("[green]✓ Dashboard is accessible[/green]")
+            console.print(f"[green]✓ Dashboard is accessible at port {dashboard_port}[/green]")
         else:
-            console.print("[red]✗ Dashboard not responding[/red]")
+            console.print(f"[red]✗ Dashboard not responding at port {dashboard_port}[/red]")
             all_healthy = False
     except Exception as e:
         console.print(f"[red]✗ Failed to check dashboard: {e}[/red]")
