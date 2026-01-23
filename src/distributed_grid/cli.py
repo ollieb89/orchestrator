@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +21,8 @@ from distributed_grid.cluster import RayClusterManager
 from distributed_grid.core.executor import GridExecutor
 from distributed_grid.core.ssh_manager import SSHManager
 from distributed_grid.orchestration.resource_sharing import ResourceType
+from distributed_grid.orchestration.offloading_detector import OffloadingDetector
+from distributed_grid.orchestration.offloading_executor import OffloadingExecutor
 
 console = Console()
 
@@ -650,6 +653,379 @@ def shared_status(config: Path) -> None:
             await orchestrator.shutdown()
     
     asyncio.run(_show_status())
+
+
+@cli.group()
+def offload():
+    """Process offloading commands."""
+    pass
+
+
+@offload.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(path_type=Path),
+    default=Path("config/my-cluster.yaml"),
+    help="Path to cluster configuration file",
+)
+@click.option(
+    "--node",
+    "-n",
+    type=str,
+    help="Specific node to scan (default: all nodes)",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"], case_sensitive=False),
+    default="table",
+    help="Output format",
+)
+def scan(config: Path, node: Optional[str], output_format: str) -> None:
+    """Scan for offloadable processes."""
+    setup_logging()
+    
+    async def _scan():
+        try:
+            cluster_config = ClusterConfig.from_yaml(config)
+            
+            # Initialize SSH manager
+            ssh_manager = SSHManager(cluster_config.nodes)
+            await ssh_manager.initialize()
+            
+            try:
+                # Initialize detector
+                detector = OffloadingDetector(ssh_manager, cluster_config)
+                
+                # Find offloading opportunities
+                recommendations = await detector.find_offloading_opportunities(node)
+                
+                if output_format == "json":
+                    output = []
+                    for rec in recommendations:
+                        output.append({
+                            "pid": rec.process.pid,
+                            "name": rec.process.name,
+                            "source": rec.source_node,
+                            "target": rec.target_node,
+                            "confidence": rec.confidence,
+                            "reason": rec.reason,
+                            "resources": rec.process.resource_requirements,
+                            "complexity": rec.migration_complexity,
+                        })
+                    console.print(json.dumps(output, indent=2))
+                else:
+                    # Table format
+                    table = Table(title="Offloadable Processes")
+                    table.add_column("PID", justify="right")
+                    table.add_column("Name")
+                    table.add_column("Target Node", style="cyan")
+                    table.add_column("Confidence", justify="right")
+                    table.add_column("Complexity", style="yellow")
+                    table.add_column("Reason")
+                    
+                    for rec in recommendations:
+                        confidence_str = f"{rec.confidence:.1%}"
+                        complexity_color = {
+                            "low": "green",
+                            "medium": "yellow",
+                            "high": "red",
+                        }.get(rec.migration_complexity, "")
+                        
+                        table.add_row(
+                            str(rec.process.pid),
+                            rec.process.name[:30] + "..." if len(rec.process.name) > 30 else rec.process.name,
+                            rec.target_node,
+                            confidence_str,
+                            f"[{complexity_color}]{rec.migration_complexity}[/{complexity_color}]",
+                            rec.reason[:50] + "..." if len(rec.reason) > 50 else rec.reason,
+                        )
+                    
+                    console.print(table)
+                    
+                    if recommendations:
+                        console.print(f"\n[green]Found {len(recommendations)} offloadable process(es)[/green]")
+                    else:
+                        console.print("\n[yellow]No offloadable processes found[/yellow]")
+                
+            finally:
+                await ssh_manager.close_all()
+                
+        except Exception as e:
+            console.print(f"[red]Scan failed: {e}[/red]")
+            raise click.ClickException(str(e))
+    
+    asyncio.run(_scan())
+
+
+@offload.command()
+@click.argument("pid", type=int)
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(path_type=Path),
+    default=Path("config/my-cluster.yaml"),
+    help="Path to cluster configuration file",
+)
+@click.option(
+    "--target-node",
+    "-t",
+    type=str,
+    help="Target node for offloading (default: auto-select)",
+)
+@click.option(
+    "--ray-dashboard",
+    default="http://localhost:8265",
+    help="Ray dashboard address",
+)
+@click.option(
+    "--capture-state",
+    is_flag=True,
+    default=True,
+    help="Capture process state before migration",
+)
+@click.option(
+    "--runtime-env",
+    type=str,
+    help="Runtime environment JSON for Ray job",
+)
+def execute(
+    pid: int,
+    config: Path,
+    target_node: Optional[str],
+    ray_dashboard: str,
+    capture_state: bool,
+    runtime_env: Optional[str],
+) -> None:
+    """Offload a specific process to another node."""
+    setup_logging()
+    
+    async def _execute():
+        try:
+            cluster_config = ClusterConfig.from_yaml(config)
+            
+            # Initialize SSH manager
+            ssh_manager = SSHManager(cluster_config.nodes)
+            await ssh_manager.initialize()
+            
+            try:
+                # Initialize detector and executor
+                detector = OffloadingDetector(ssh_manager, cluster_config)
+                executor = OffloadingExecutor(ssh_manager, cluster_config, ray_dashboard)
+                await executor.initialize()
+                
+                # Find the process
+                recommendations = await detector.find_offloading_opportunities()
+                
+                # Find the specific PID
+                target_rec = None
+                for rec in recommendations:
+                    if rec.process.pid == pid:
+                        if target_node is None or rec.target_node == target_node:
+                            target_rec = rec
+                            break
+                
+                if not target_rec:
+                    console.print(f"[red]Process {pid} not found or not offloadable[/red]")
+                    console.print("Use 'grid offload scan' to see offloadable processes")
+                    return
+                
+                # Parse runtime environment
+                runtime_env_dict = None
+                if runtime_env:
+                    runtime_env_dict = json.loads(runtime_env)
+                
+                # Execute offloading
+                console.print(f"[blue]Offloading process {pid} to {target_rec.target_node}...[/blue]")
+                
+                task_id = await executor.execute_offloading(
+                    target_rec,
+                    capture_state=capture_state,
+                    runtime_env=runtime_env_dict,
+                )
+                
+                console.print(f"[green]✓[/green] Offloading started with task ID: {task_id}")
+                
+                # Monitor progress
+                while True:
+                    task = executor.get_task_status(task_id)
+                    if not task:
+                        break
+                    
+                    if task.status.value in ["completed", "failed", "cancelled"]:
+                        if task.status.value == "completed":
+                            console.print(f"[green]✓[/green] Offloading completed successfully")
+                        else:
+                            console.print(f"[red]✗[/red] Offloading {task.status.value}")
+                            if task.error_message:
+                                console.print(f"Error: {task.error_message}")
+                        break
+                    
+                    console.print(f"Status: {task.status.value}")
+                    await asyncio.sleep(2)
+                
+            finally:
+                await ssh_manager.close_all()
+                
+        except Exception as e:
+            console.print(f"[red]Offloading failed: {e}[/red]")
+            raise click.ClickException(str(e))
+    
+    asyncio.run(_execute())
+
+
+@offload.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(path_type=Path),
+    default=Path("config/my-cluster.yaml"),
+    help="Path to cluster configuration file",
+)
+@click.option(
+    "--ray-dashboard",
+    default="http://localhost:8265",
+    help="Ray dashboard address",
+)
+def status(config: Path, ray_dashboard: str) -> None:
+    """Show offloading status and history."""
+    setup_logging()
+    
+    async def _status():
+        try:
+            cluster_config = ClusterConfig.from_yaml(config)
+            
+            # Initialize SSH manager
+            ssh_manager = SSHManager(cluster_config.nodes)
+            await ssh_manager.initialize()
+            
+            try:
+                # Initialize executor
+                executor = OffloadingExecutor(ssh_manager, cluster_config, ray_dashboard)
+                await executor.initialize()
+                
+                # Get statistics
+                stats = await executor.get_offloading_statistics()
+                
+                # Show summary
+                console.print("[bold]Offloading Statistics[/bold]")
+                console.print(f"Total tasks: {stats['total_tasks']}")
+                console.print(f"Active tasks: {stats['active_tasks']}")
+                console.print(f"Completed: {stats['completed_tasks']}")
+                console.print(f"Failed: {stats['failed_tasks']}")
+                console.print(f"Cancelled: {stats['cancelled_tasks']}")
+                
+                if stats['average_duration'] > 0:
+                    console.print(f"Average duration: {stats['average_duration']:.1f}s")
+                
+                # Show active tasks
+                active_tasks = executor.list_active_tasks()
+                if active_tasks:
+                    console.print("\n[bold]Active Tasks[/bold]")
+                    table = Table()
+                    table.add_column("Task ID")
+                    table.add_column("PID", justify="right")
+                    table.add_column("Target")
+                    table.add_column("Status")
+                    table.add_column("Started")
+                    
+                    for task in active_tasks:
+                        table.add_row(
+                            task.task_id,
+                            str(task.recommendation.process.pid),
+                            task.recommendation.target_node,
+                            task.status.value,
+                            task.started_at.strftime("%H:%M:%S") if task.started_at else "",
+                        )
+                    
+                    console.print(table)
+                
+                # Show recent history
+                history = executor.get_task_history(limit=10)
+                if history:
+                    console.print("\n[bold]Recent History[/bold]")
+                    table = Table()
+                    table.add_column("Task ID")
+                    table.add_column("PID", justify="right")
+                    table.add_column("Target")
+                    table.add_column("Status")
+                    table.add_column("Completed")
+                    
+                    for task in reversed(history[-10:]):
+                        status_color = {
+                            "completed": "green",
+                            "failed": "red",
+                            "cancelled": "yellow",
+                        }.get(task.status.value, "")
+                        
+                        table.add_row(
+                            task.task_id,
+                            str(task.recommendation.process.pid),
+                            task.recommendation.target_node,
+                            f"[{status_color}]{task.status.value}[/{status_color}]",
+                            task.completed_at.strftime("%H:%M:%S") if task.completed_at else "",
+                        )
+                    
+                    console.print(table)
+                
+            finally:
+                await ssh_manager.close_all()
+                
+        except Exception as e:
+            console.print(f"[red]Failed to get status: {e}[/red]")
+            raise click.ClickException(str(e))
+    
+    asyncio.run(_status())
+
+
+@offload.command()
+@click.argument("task_id", type=str)
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(path_type=Path),
+    default=Path("config/my-cluster.yaml"),
+    help="Path to cluster configuration file",
+)
+@click.option(
+    "--ray-dashboard",
+    default="http://localhost:8265",
+    help="Ray dashboard address",
+)
+def cancel(task_id: str, config: Path, ray_dashboard: str) -> None:
+    """Cancel an active offloading task."""
+    setup_logging()
+    
+    async def _cancel():
+        try:
+            cluster_config = ClusterConfig.from_yaml(config)
+            
+            # Initialize SSH manager
+            ssh_manager = SSHManager(cluster_config.nodes)
+            await ssh_manager.initialize()
+            
+            try:
+                # Initialize executor
+                executor = OffloadingExecutor(ssh_manager, cluster_config, ray_dashboard)
+                await executor.initialize()
+                
+                # Cancel the task
+                success = await executor.cancel_offloading(task_id)
+                
+                if success:
+                    console.print(f"[green]✓[/green] Task {task_id} cancelled")
+                else:
+                    console.print(f"[red]✗[/red] Task {task_id} not found or already completed")
+                
+            finally:
+                await ssh_manager.close_all()
+                
+        except Exception as e:
+            console.print(f"[red]Failed to cancel task: {e}[/red]")
+            raise click.ClickException(str(e))
+    
+    asyncio.run(_cancel())
 
 
 def main() -> None:
