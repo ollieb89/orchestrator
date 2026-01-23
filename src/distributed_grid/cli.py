@@ -3,27 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
-from typing import Optional, Dict, Any
 
 import click
-from pydantic import ValidationError
 import yaml
 from rich.console import Console
 from rich.table import Table
 
-from distributed_grid.core import GridOrchestrator
-from distributed_grid.config import ClusterConfig, Settings
+from distributed_grid.config import ClusterConfig
 from distributed_grid.utils.logging import setup_logging
-from distributed_grid.provisioning import GridProvisioner
 from distributed_grid.cluster import RayClusterManager
-from distributed_grid.core.executor import GridExecutor
-from distributed_grid.core.ssh_manager import SSHManager
-from distributed_grid.orchestration.resource_sharing_orchestrator import ResourceSharingOrchestrator
-from distributed_grid.orchestration.resource_sharing_manager import ResourceType, AllocationPriority
-from distributed_grid.orchestration.offloading_detector import OffloadingDetector
-from distributed_grid.orchestration.offloading_executor import OffloadingExecutor
 
 console = Console()
 
@@ -176,7 +165,7 @@ def config(config_path: Path) -> None:
     
     try:
         cluster_config = ClusterConfig.from_yaml(config_path)
-        console.print(f"[green]✓[/green] Configuration is valid")
+        console.print("[green]✓[/green] Configuration is valid")
         console.print(f"  Cluster: {cluster_config.name}")
         console.print(f"  Nodes: {len(cluster_config.nodes)}")
         
@@ -418,7 +407,7 @@ def request(target_node: str, resource_type: str, amount: float, priority: str,
             boost_id = await boost_manager.request_boost(request)
             
             if boost_id:
-                console.print(f"[green]✓[/green] Resource boost requested successfully")
+                console.print("[green]✓[/green] Resource boost requested successfully")
                 console.print(f"Boost ID: [bold]{boost_id}[/bold]")
                 console.print(f"Target: {target_node}")
                 console.print(f"Resource: {resource_type.upper()} x{amount}")
@@ -487,7 +476,7 @@ def release(boost_id: str, config: Path) -> None:
             success = await boost_manager.release_boost(boost_id)
             
             if success:
-                console.print(f"[green]✓[/green] Resource boost released successfully")
+                console.print("[green]✓[/green] Resource boost released successfully")
                 console.print(f"Boost ID: {boost_id}")
             else:
                 console.print(f"[red]✗[/red] Failed to release boost {boost_id}")
