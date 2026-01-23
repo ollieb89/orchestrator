@@ -910,11 +910,40 @@ def status(config: Path) -> None:
             
             if status.get("resource_sharing"):
                 sharing = status["resource_sharing"]
+
+                node_totals = {
+                    n.name: {"CPU": float(n.cpu_count), "GPU": float(n.gpu_count), "MEMORY": float(n.memory_gb)}
+                    for n in cluster_config.nodes
+                }
+
+                def _fmt_number(value: object) -> str:
+                    try:
+                        v = float(value)
+                    except Exception:
+                        return str(value)
+
+                    # Round to 1 decimal to avoid float artifacts like 0.8000000000000007
+                    v = round(v, 1)
+                    text = f"{v:.1f}"
+                    text = text.rstrip("0").rstrip(".")
+                    return text
+
+                def _fmt_left_total(node: str, resource: str, left: object) -> str:
+                    total = node_totals.get(node, {}).get(resource)
+                    if total is None:
+                        return _fmt_number(left)
+
+                    left_s = _fmt_number(left)
+                    total_s = _fmt_number(total)
+                    if resource == "MEMORY":
+                        return f"{left_s}/{total_s} GB"
+                    return f"{left_s}/{total_s}"
                 
                 # Allocation Table
                 allocations_table = Table(title="Active Allocations")
                 allocations_table.add_column("ID", style="dim")
-                allocations_table.add_column("Node")
+                allocations_table.add_column("Source")
+                allocations_table.add_column("Target")
                 allocations_table.add_column("Resource")
                 allocations_table.add_column("Amount", justify="right")
                 allocations_table.add_column("Priority")
@@ -930,9 +959,10 @@ def status(config: Path) -> None:
                     
                     allocations_table.add_row(
                         alloc_id[:8],
-                        alloc["node_id"],
+                        str(alloc.get("source_node") or "-"),
+                        str(alloc.get("target_node") or alloc.get("node_id") or "-"),
                         resource_type,
-                        str(alloc["amount"]),
+                        _fmt_number(alloc["amount"]),
                         alloc["priority"],
                         alloc["expires_at"]
                     )
@@ -946,7 +976,11 @@ def status(config: Path) -> None:
                 
                 for node, res in sharing.get("shared_resources", {}).items():
                     for r_type, amt in res.items():
-                        resources_table.add_row(node, r_type, str(amt))
+                        r_type_str = r_type
+                        if hasattr(r_type, "value"):
+                            r_type_str = r_type.value
+                        r_type_str = str(r_type_str)
+                        resources_table.add_row(node, r_type_str, _fmt_left_total(node, r_type_str, amt))
                 console.print(resources_table)
 
             await orchestrator.stop()

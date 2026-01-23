@@ -179,10 +179,11 @@ class ResourceSharingManager:
 
         # Start from current availability snapshots (best-effort).
         for node_id, snapshot in snapshots.items():
-            # Share only a portion of available resources to avoid starving the donor.
-            cpu_shareable = max(0.0, snapshot.cpu_available * (1 - threshold))
-            gpu_shareable = max(0.0, float(snapshot.gpu_available) * (1 - threshold))
-            mem_shareable_gb = max(0.0, (snapshot.memory_available / (1024**3)) * (1 - threshold))
+            # Report actual currently-available resources ("resources left") for human-facing status.
+            # Threshold-based decisions are handled elsewhere (e.g., donor selection).
+            cpu_shareable = max(0.0, float(snapshot.cpu_available))
+            gpu_shareable = max(0.0, float(snapshot.gpu_available))
+            mem_shareable_gb = max(0.0, float(snapshot.memory_available) / (1024**3))
 
             shared_resources[node_id] = {
                 ResourceType.CPU: cpu_shareable,
@@ -190,12 +191,19 @@ class ResourceSharingManager:
                 ResourceType.MEMORY: mem_shareable_gb,
             }
 
-        # Subtract currently active allocations from the donor (source) node so pool reflects remaining shareable.
+        # Subtract active allocations from the donor (source) node so the pool reflects what's left to share.
+        # Note: this is a logical overlay on top of observed availability (Ray/metrics may not reflect these).
         for alloc in self._active_allocations:
             if alloc.source_node not in shared_resources:
                 continue
-            current = shared_resources[alloc.source_node].get(alloc.resource_type, 0.0)
-            shared_resources[alloc.source_node][alloc.resource_type] = max(0.0, current - float(alloc.amount))
+
+            current = float(shared_resources[alloc.source_node].get(alloc.resource_type, 0.0))
+            if alloc.resource_type == ResourceType.GPU:
+                delta = float(int(round(float(alloc.amount))))
+            else:
+                delta = float(alloc.amount)
+
+            shared_resources[alloc.source_node][alloc.resource_type] = max(0.0, current - delta)
 
         return shared_resources
 
@@ -663,6 +671,8 @@ class ResourceSharingManager:
             resource_type_value = self._normalize_resource_type(alloc.get("resource_type"))
             active_allocations[alloc["allocation_id"]] = {
                 "node_id": alloc["target_node"],
+                "source_node": alloc.get("source_node"),
+                "target_node": alloc.get("target_node"),
                 "resource_type": resource_type_value,
                 "amount": alloc["amount"],
                 "priority": "normal",
