@@ -136,13 +136,15 @@ class RayClusterManager:
         # Ray system configuration for better heartbeat handling
         ray_config = (
             "RAY_backend_log_level=info "
-            "RAY_heartbeat_timeout_ms=30000 "  # 30 seconds
-            "RAY_num_heartbeat_timeout_periods=5 "  # Allow 5 missed heartbeats
-            "RAY_health_check_initial_delay_ms=5000 "  # 5 seconds initial delay
-            "RAY_health_check_period_ms=10000 "  # Check every 10 seconds
-            "RAY_health_check_timeout_ms=5000 "  # 5 seconds timeout for health checks
-            "RAY_gcs_server_request_timeout_seconds_ms=60000 "  # 60 seconds GCS timeout
-            "RAY_timeout_ms=60000 "  # General operation timeout
+            "RAY_heartbeat_timeout_ms=60000 "  # 60 seconds (increased from 30)
+            "RAY_num_heartbeat_timeout_periods=10 "  # Allow 10 missed heartbeats (increased from 5)
+            "RAY_health_check_initial_delay_ms=10000 "  # 10 seconds initial delay (increased from 5)
+            "RAY_health_check_period_ms=15000 "  # Check every 15 seconds (increased from 10)
+            "RAY_health_check_timeout_ms=10000 "  # 10 seconds timeout for health checks (increased from 5)
+            "RAY_gcs_server_request_timeout_seconds_ms=120000 "  # 120 seconds GCS timeout (increased from 60)
+            "RAY_timeout_ms=120000 "  # General operation timeout (increased from 60)
+            "RAY_raylet_death_check_interval_ms=5000 "  # Check every 5 seconds
+            "RAY_node_manager_timeout_ms=60000 "  # Node manager timeout
         )
         
         start_cmd = (
@@ -215,13 +217,15 @@ class RayClusterManager:
         # Ray system configuration for better heartbeat handling (same as head node)
         ray_config = (
             "RAY_backend_log_level=info "
-            "RAY_heartbeat_timeout_ms=30000 "  # 30 seconds
-            "RAY_num_heartbeat_timeout_periods=5 "  # Allow 5 missed heartbeats
-            "RAY_health_check_initial_delay_ms=5000 "  # 5 seconds initial delay
-            "RAY_health_check_period_ms=10000 "  # Check every 10 seconds
-            "RAY_health_check_timeout_ms=5000 "  # 5 seconds timeout for health checks
-            "RAY_gcs_server_request_timeout_seconds_ms=60000 "  # 60 seconds GCS timeout
-            "RAY_timeout_ms=60000 "  # General operation timeout
+            "RAY_heartbeat_timeout_ms=60000 "  # 60 seconds (increased from 30)
+            "RAY_num_heartbeat_timeout_periods=10 "  # Allow 10 missed heartbeats (increased from 5)
+            "RAY_health_check_initial_delay_ms=10000 "  # 10 seconds initial delay (increased from 5)
+            "RAY_health_check_period_ms=15000 "  # Check every 15 seconds (increased from 10)
+            "RAY_health_check_timeout_ms=10000 "  # 10 seconds timeout for health checks (increased from 5)
+            "RAY_gcs_server_request_timeout_seconds_ms=120000 "  # 120 seconds GCS timeout (increased from 60)
+            "RAY_timeout_ms=120000 "  # General operation timeout (increased from 60)
+            "RAY_raylet_death_check_interval_ms=5000 "  # Check every 5 seconds
+            "RAY_node_manager_timeout_ms=60000 "  # Node manager timeout
         )
         
         start_cmd = (
