@@ -40,6 +40,14 @@ class RayConfig:
     head_bind_all: bool = True
     namespace: str = "default"
     log_level: str = "info"
+    # Heartbeat and health check settings
+    heartbeat_timeout_ms: int = 30000  # 30 seconds
+    num_heartbeat_timeout_periods: int = 5  # Allow 5 missed heartbeats
+    health_check_initial_delay_ms: int = 5000  # 5 seconds
+    health_check_period_ms: int = 10000  # 10 seconds
+    health_check_timeout_ms: int = 5000  # 5 seconds
+    gcs_server_request_timeout_seconds_ms: int = 60000  # 60 seconds
+    timeout_ms: int = 60000  # 60 seconds general timeout
 
 @dataclass
 class ClusterConfig:

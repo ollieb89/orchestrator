@@ -132,8 +132,21 @@ class RayClusterManager:
         ray_client_server_port = 10003
         min_worker_port = 11000
         max_worker_port = 11100
+        
+        # Ray system configuration for better heartbeat handling
+        ray_config = (
+            "RAY_backend_log_level=info "
+            "RAY_heartbeat_timeout_ms=30000 "  # 30 seconds
+            "RAY_num_heartbeat_timeout_periods=5 "  # Allow 5 missed heartbeats
+            "RAY_health_check_initial_delay_ms=5000 "  # 5 seconds initial delay
+            "RAY_health_check_period_ms=10000 "  # Check every 10 seconds
+            "RAY_health_check_timeout_ms=5000 "  # 5 seconds timeout for health checks
+            "RAY_gcs_server_request_timeout_seconds_ms=60000 "  # 60 seconds GCS timeout
+            "RAY_timeout_ms=60000 "  # General operation timeout
+        )
+        
         start_cmd = (
-            f"{self.ray_bin} start --head "
+            f"{ray_config} {self.ray_bin} start --head "
             f"--port={port} "
             f"--node-ip-address={head_ip} "
             f"--node-manager-port={node_manager_port} "
@@ -188,17 +201,31 @@ class RayClusterManager:
             else:
                 console.print(f"[green]✓[/green] Worker {node.name} connected")
     
-    async def _start_worker_node(self, node, redis_address: str) -> None:
+    async def _start_worker_node(self, worker_node, redis_address: str) -> None:
         """Start a Ray worker node."""
-        worker_ip = await self._get_node_ip(node)
-        # Use the same fixed ports/ranges as head (ports are per-host, so no conflict).
+        worker_ip = await self._get_node_ip(worker_node)
+        
+        # Use the same ports as head node for consistency
         node_manager_port = 10001
         object_manager_port = 10002
         ray_client_server_port = 10003
         min_worker_port = 11000
         max_worker_port = 11100
+        
+        # Ray system configuration for better heartbeat handling (same as head node)
+        ray_config = (
+            "RAY_backend_log_level=info "
+            "RAY_heartbeat_timeout_ms=30000 "  # 30 seconds
+            "RAY_num_heartbeat_timeout_periods=5 "  # Allow 5 missed heartbeats
+            "RAY_health_check_initial_delay_ms=5000 "  # 5 seconds initial delay
+            "RAY_health_check_period_ms=10000 "  # Check every 10 seconds
+            "RAY_health_check_timeout_ms=5000 "  # 5 seconds timeout for health checks
+            "RAY_gcs_server_request_timeout_seconds_ms=60000 "  # 60 seconds GCS timeout
+            "RAY_timeout_ms=60000 "  # General operation timeout
+        )
+        
         start_cmd = (
-            f"{self.ray_bin} start "
+            f"{ray_config} {self.ray_bin} start "
             f"--address={redis_address} "
             f"--node-ip-address={worker_ip} "
             f"--node-manager-port={node_manager_port} "
@@ -208,9 +235,9 @@ class RayClusterManager:
             f"--max-worker-port={max_worker_port}"
         )
         
-        result = await self.ssh_manager.run_command(node.name, start_cmd, timeout=30)
+        result = await self.ssh_manager.run_command(worker_node.name, start_cmd, timeout=30)
         if result.exit_status != 0:
-            raise RuntimeError(f"Failed to start worker {node.name}: {result.stderr}")
+            raise RuntimeError(f"Failed to start worker {worker_node.name}: {result.stderr}")
     
     async def stop_cluster(self) -> None:
         """Stop the Ray cluster on all nodes."""
