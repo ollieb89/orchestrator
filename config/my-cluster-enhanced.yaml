@@ -1,0 +1,87 @@
+execution:
+  default_gpus_per_node: 1
+  default_nodes: 3
+  retry_attempts: 3
+  timeout_seconds: 3600
+  working_directory: /tmp/grid
+  # Resource sharing configuration
+  resource_sharing:
+    enabled: true
+    mode: dynamic_balancing  # offload_only, share_and_offload, dynamic_balancing
+    policy: balanced  # conservative, balanced, aggressive, predictive
+    rebalance_interval_seconds: 30
+    allocation_timeout_minutes: 10
+    monitoring_interval_seconds: 10
+    thresholds:
+      cpu_pressure_high: 0.8
+      cpu_pressure_low: 0.3
+      memory_pressure_high: 0.8
+      memory_pressure_low: 0.3
+      gpu_pressure_high: 0.8
+      gpu_pressure_low: 0.3
+      excess_threshold: 0.2  # 20% excess required for sharing
+    priorities:
+      master_node: 1.0
+      worker_nodes:
+        gpu1: 0.8
+        gpu2: 0.9
+logging:
+  format: json
+  level: INFO
+name: my-cluster
+nodes:
+- cpu_count: 8
+  gpu_count: 1
+  host: gpu-master
+  memory_gb: 32
+  name: gpu-master
+  port: 22
+  role: master
+  tags:
+  - gpu
+  - cuda
+  - master
+  user: ollie
+  # Resource sharing settings per node
+  resource_sharing:
+    can_share: true
+    max_share_cpu: 4  # Max CPUs to share
+    max_share_memory_gb: 16  # Max memory to share
+    max_share_gpu: 0  # Master doesn't share GPUs by default
+    priority: 1.0
+- cpu_count: 6
+  gpu_count: 1
+  host: gpu1
+  memory_gb: 16
+  name: gpu1
+  port: 22
+  role: worker
+  tags:
+  - gpu
+  - cuda
+  - worker
+  user: ob
+  resource_sharing:
+    can_share: true
+    max_share_cpu: 3
+    max_share_memory_gb: 8
+    max_share_gpu: 1
+    priority: 0.8
+- cpu_count: 8
+  gpu_count: 1
+  host: gpu2
+  memory_gb: 32
+  name: gpu2
+  port: 22
+  role: worker
+  tags:
+  - gpu
+  - cuda
+  - worker
+  user: ollie
+  resource_sharing:
+    can_share: true
+    max_share_cpu: 4
+    max_share_memory_gb: 16
+    max_share_gpu: 1
+    priority: 0.9
