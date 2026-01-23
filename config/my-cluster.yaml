@@ -22,7 +22,7 @@ nodes:
   user: ollie
 - gpu_count: 1
   host: gpu1
-  memory_gb: 32
+  memory_gb: 16
   name: gpu1
   port: 22
   role: worker
