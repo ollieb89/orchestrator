@@ -126,10 +126,19 @@ class RayClusterManager:
     
     async def _start_head_node(self, head_node, head_ip: str, port: int, dashboard_port: int) -> None:
         """Start the Ray head node."""
+        # Use fixed ports to make cluster networking predictable.
+        node_manager_port = 10001
+        object_manager_port = 10002
+        min_worker_port = 11000
+        max_worker_port = 11100
         start_cmd = (
             f"{self.ray_bin} start --head "
             f"--port={port} "
             f"--node-ip-address={head_ip} "
+            f"--node-manager-port={node_manager_port} "
+            f"--object-manager-port={object_manager_port} "
+            f"--min-worker-port={min_worker_port} "
+            f"--max-worker-port={max_worker_port} "
             f"--dashboard-host=0.0.0.0 "
             f"--dashboard-port={dashboard_port} "
             f"--include-dashboard=true"
@@ -180,10 +189,19 @@ class RayClusterManager:
     async def _start_worker_node(self, node, redis_address: str) -> None:
         """Start a Ray worker node."""
         worker_ip = await self._get_node_ip(node)
+        # Use the same fixed ports/ranges as head (ports are per-host, so no conflict).
+        node_manager_port = 10001
+        object_manager_port = 10002
+        min_worker_port = 11000
+        max_worker_port = 11100
         start_cmd = (
             f"{self.ray_bin} start "
             f"--address={redis_address} "
-            f"--node-ip-address={worker_ip}"
+            f"--node-ip-address={worker_ip} "
+            f"--node-manager-port={node_manager_port} "
+            f"--object-manager-port={object_manager_port} "
+            f"--min-worker-port={min_worker_port} "
+            f"--max-worker-port={max_worker_port}"
         )
         
         result = await self.ssh_manager.run_command(node.name, start_cmd, timeout=30)
