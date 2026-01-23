@@ -921,10 +921,17 @@ def status(config: Path) -> None:
                 allocations_table.add_column("Expires", style="yellow")
                 
                 for alloc_id, alloc in sharing.get("active_allocations", {}).items():
+                    # Convert resource_type to clean string
+                    resource_type = alloc["resource_type"]
+                    if isinstance(resource_type, str):
+                        # Extract just the enum value if it's like "ResourceType.CPU"
+                        if "." in resource_type:
+                            resource_type = resource_type.split(".")[-1]
+                    
                     allocations_table.add_row(
                         alloc_id[:8],
                         alloc["node_id"],
-                        alloc["resource_type"],
+                        resource_type,
                         str(alloc["amount"]),
                         alloc["priority"],
                         alloc["expires_at"]

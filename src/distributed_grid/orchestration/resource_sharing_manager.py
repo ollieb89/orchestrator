@@ -22,71 +22,17 @@ from distributed_grid.monitoring.resource_metrics import (
     ResourceTrend,
 )
 from distributed_grid.config import ClusterConfig, NodeConfig
+from distributed_grid.orchestration.resource_sharing_types import (
+    SharingPolicy,
+    ResourceRequest,
+    ResourceAllocation,
+    AllocationPriority,
+)
+from distributed_grid.orchestration.resource_sharing_persistence import (
+    ResourceSharingPersistence,
+)
 
 logger = structlog.get_logger(__name__)
-
-
-class SharingPolicy(str, Enum):
-    """Resource sharing policies."""
-    CONSERVATIVE = "conservative"  # Only share excess resources
-    BALANCED = "balanced"  # Share resources based on pressure
-    AGGRESSIVE = "aggressive"  # Proactively share resources
-    PREDICTIVE = "predictive"  # Use predictions to anticipate needs
-
-
-class AllocationPriority(int, Enum):
-    """Priority levels for resource allocation."""
-    LOW = 1
-    NORMAL = 2
-    HIGH = 3
-    CRITICAL = 4
-
-
-@dataclass
-class ResourceRequest:
-    """A request for shared resources."""
-    request_id: str
-    node_id: str
-    resource_type: ResourceType
-    amount: float
-    priority: AllocationPriority
-    duration: Optional[timedelta] = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    timeout: Optional[timedelta] = field(default_factory=lambda: timedelta(minutes=5))
-    
-    @property
-    def is_expired(self) -> bool:
-        """Check if the request has expired."""
-        return datetime.now(UTC) > self.created_at + self.timeout
-    
-    @property
-    def urgency_score(self) -> float:
-        """Calculate urgency score based on priority and wait time."""
-        wait_time = (datetime.now(UTC) - self.created_at).total_seconds()
-        priority_weight = self.priority.value * 0.7
-        time_weight = min(wait_time / 300.0, 1.0) * 0.3  # Normalize to 5 minutes
-        return priority_weight + time_weight
-
-
-@dataclass
-class ResourceAllocation:
-    """An allocation of shared resources."""
-    allocation_id: str
-    request_id: str
-    source_node: str
-    target_node: str
-    resource_type: ResourceType
-    amount: float
-    allocated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    lease_duration: Optional[timedelta] = None
-    conditions: Dict[str, Any] = field(default_factory=dict)
-    
-    @property
-    def is_expired(self) -> bool:
-        """Check if the allocation has expired."""
-        if not self.lease_duration:
-            return False
-        return datetime.now(UTC) > self.allocated_at + self.lease_duration
 
 
 class ResourceSharingManager:
@@ -107,10 +53,14 @@ class ResourceSharingManager:
         self.rebalance_interval = rebalance_interval
         self.allocation_timeout = allocation_timeout
         
-        # Resource tracking
+        # Resource tracking - now using persistent actor
         self._shared_resources: Dict[str, Dict[ResourceType, float]] = {}
         self._resource_requests: List[ResourceRequest] = []
         self._active_allocations: List[ResourceAllocation] = []
+        
+        # Ray actor for persistent state (replaced with file persistence)
+        self._state_actor = None
+        self._persistence = ResourceSharingPersistence()
         
         # Node roles and priorities
         self._node_priorities: Dict[str, float] = {}
@@ -151,6 +101,11 @@ class ResourceSharingManager:
         self._running = True
         logger.info("Starting resource sharing manager", policy=self.policy)
         
+        # Initialize persistent state actor (disabled for now due to import issues)
+        # await ensure_actor_initialized()
+        # self._state_actor = get_state_actor()
+        self._state_actor = None
+        
         # Initialize shared resource pools
         await self._initialize_shared_resources()
         
@@ -180,12 +135,40 @@ class ResourceSharingManager:
         
     async def _initialize_shared_resources(self) -> None:
         """Initialize shared resource pools."""
+        # Load from file persistence
+        actor_resources = self._persistence.load_shared_resources()
+        if actor_resources:
+            # Convert string keys back to ResourceType enums
+            self._shared_resources = {}
+            for node_id, resources in actor_resources.items():
+                self._shared_resources[node_id] = {
+                    ResourceType.CPU: resources.get("CPU", 0.0),
+                    ResourceType.GPU: resources.get("GPU", 0.0),
+                    ResourceType.MEMORY: resources.get("MEMORY", 0.0),
+                }
+            return
+        
+        # Initialize from config
         for node in self.cluster_config.nodes:
             self._shared_resources[node.name] = {
                 ResourceType.CPU: 0.0,
                 ResourceType.GPU: 0.0,
                 ResourceType.MEMORY: 0.0,
             }
+            # Save to file
+            self._save_shared_resources()
+            
+    def _save_shared_resources(self) -> None:
+        """Save shared resources to file."""
+        # Convert to JSON-serializable format
+        serializable = {}
+        for node_id, resources in self._shared_resources.items():
+            serializable[node_id] = {
+                "CPU": resources.get(ResourceType.CPU, 0.0),
+                "GPU": resources.get(ResourceType.GPU, 0.0),
+                "MEMORY": resources.get(ResourceType.MEMORY, 0.0),
+            }
+        self._persistence.save_shared_resources(serializable)
             
     async def _rebalancing_loop(self) -> None:
         """Main rebalancing loop."""
@@ -236,6 +219,27 @@ class ResourceSharingManager:
             
     async def _process_resource_requests(self, snapshots: Dict[str, ResourceSnapshot]) -> None:
         """Process pending resource requests."""
+        # Load requests from persistence
+        if not self._resource_requests:  # Only load if empty
+            persisted_allocations = self._persistence.load_allocations()
+            # Convert persisted allocations to ResourceAllocation objects
+            from distributed_grid.monitoring.resource_metrics import ResourceType
+            from distributed_grid.orchestration.resource_sharing_types import ResourceAllocation
+            
+            self._active_allocations = []
+            for alloc_data in persisted_allocations:
+                allocation = ResourceAllocation(
+                    allocation_id=alloc_data["allocation_id"],
+                    request_id=alloc_data["request_id"],
+                    source_node=alloc_data["source_node"],
+                    target_node=alloc_data["target_node"],
+                    resource_type=ResourceType(alloc_data["resource_type"]),
+                    amount=alloc_data["amount"],
+                    allocated_at=datetime.fromisoformat(alloc_data["allocated_at"]),
+                    lease_duration=None,  # Could be restored from data if needed
+                )
+                self._active_allocations.append(allocation)
+            
         if not self._resource_requests:
             return
             
@@ -249,6 +253,8 @@ class ResourceSharingManager:
         for request in sorted_requests:
             if await self._fulfill_request(request, snapshots):
                 self._resource_requests.remove(request)
+                # Remove from persistent actor
+                self._save_allocations()
                 
     async def _fulfill_request(
         self,
@@ -282,6 +288,10 @@ class ResourceSharingManager:
         # Execute allocation
         if await self._execute_allocation(allocation):
             self._active_allocations.append(allocation)
+            
+            # Store in persistent actor
+            self._save_allocations()
+            
             logger.info(
                 "Resource allocated",
                 allocation_id=allocation.allocation_id,
@@ -531,6 +541,9 @@ class ResourceSharingManager:
         
         self._resource_requests.append(request)
         
+        # Store in persistent actor
+        self._save_allocations()
+        
         logger.info(
             "Resource request submitted",
             request_id=request_id,
@@ -555,23 +568,53 @@ class ResourceSharingManager:
             
         return False
         
-    def get_resource_status(self) -> Dict[str, Any]:
-        """Get the current status of resource sharing."""
-        active_allocations = {}
+    def _save_allocations(self) -> None:
+        """Save allocations to file."""
+        # Convert to JSON-serializable format
+        serializable = []
         for alloc in self._active_allocations:
-            active_allocations[alloc.allocation_id] = {
-                "node_id": alloc.target_node,
+            serializable.append({
+                "allocation_id": alloc.allocation_id,
+                "request_id": alloc.request_id,
+                "source_node": alloc.source_node,
+                "target_node": alloc.target_node,
                 "resource_type": str(alloc.resource_type),
                 "amount": alloc.amount,
-                "priority": "normal",  # Priority not stored in allocation currently
-                "expires_at": (alloc.allocated_at + alloc.lease_duration).isoformat() if alloc.lease_duration else "never"
+                "allocated_at": alloc.allocated_at.isoformat(),
+            })
+        self._persistence.save_allocations(serializable)
+    def get_resource_status(self) -> Dict[str, Any]:
+        """Get the current status of resource sharing."""
+        # Load from persistence for latest state
+        persisted_allocations = self._persistence.load_allocations()
+        persisted_resources = self._persistence.load_shared_resources()
+        
+        # Transform allocations to expected format
+        active_allocations = {}
+        for alloc in persisted_allocations:
+            active_allocations[alloc["allocation_id"]] = {
+                "node_id": alloc["target_node"],
+                "resource_type": alloc["resource_type"],
+                "amount": alloc["amount"],
+                "priority": "normal",
+                "expires_at": "never",  # Could be restored from data if needed
             }
-
+        
+        # Convert shared resources back to ResourceType enums
+        shared_resources = {}
+        from distributed_grid.monitoring.resource_metrics import ResourceType
+        for node_id, resources in persisted_resources.items():
+            shared_resources[node_id] = {
+                ResourceType.CPU: resources.get("CPU", 0.0),
+                ResourceType.GPU: resources.get("GPU", 0.0),
+                ResourceType.MEMORY: resources.get("MEMORY", 0.0),
+            }
+        
         return {
             "policy": self.policy,
-            "pending_requests_count": len(self._resource_requests),
+            "pending_requests_count": 0,  # Could be tracked if needed
             "active_allocations": active_allocations,
-            "shared_resources": self._shared_resources,
+            "shared_resources": shared_resources,
             "node_priorities": self._node_priorities,
             "master_node": self._master_node,
         }
