@@ -204,7 +204,7 @@ def install(ctx, config, ray_version, additional_packages):
 @click.option(
     "--port",
     type=int,
-    default=6379,
+    default=6399,
     help="Ray head node port",
 )
 @click.option(

@@ -93,7 +93,7 @@ class RayClusterManager:
         if result.exit_status != 0:
             raise RuntimeError(f"Failed to install Ray on {node.name}: {result.stderr}")
     
-    async def start_cluster(self, port: int = 6379, dashboard_port: int = 8265) -> None:
+    async def start_cluster(self, port: int = 6399, dashboard_port: int = 8265) -> None:
         """Start the Ray cluster."""
         console.print("[blue]Starting Ray cluster...[/blue]")
         await self.ssh_manager.initialize()
