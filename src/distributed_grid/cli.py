@@ -948,16 +948,21 @@ def status(config: Path) -> None:
                     if total is None:
                         return _fmt_number(left)
 
+                    # Calculate used from total and available
+                    total_val = float(total)
+                    left_val = float(left)
+                    used_val = total_val - left_val
+
                     # For discrete resources, avoid showing decimals.
                     if resource == "GPU":
-                        left_s = str(int(float(left)))
+                        used_s = str(int(round(used_val)))
                         total_s = str(int(float(total)))
                     else:
-                        left_s = _fmt_number(left)
+                        used_s = _fmt_number(used_val)
                         total_s = _fmt_number(total)
                     if resource == "MEMORY":
-                        return f"{left_s}/{total_s} GB"
-                    return f"{left_s}/{total_s}"
+                        return f"{used_s}/{total_s} GB"
+                    return f"{used_s}/{total_s}"
                 
                 # Allocation Table
                 allocations_table = Table(title="Active Allocations")
@@ -989,10 +994,10 @@ def status(config: Path) -> None:
                 console.print(allocations_table)
 
                 # Shared Resources
-                resources_table = Table(title="Shared Resources Pool")
+                resources_table = Table(title="Available Resources for Sharing")
                 resources_table.add_column("Node")
                 resources_table.add_column("Resource")
-                resources_table.add_column("Amount", justify="right")
+                resources_table.add_column("Used/Total", justify="right")  # Updated column header
                 
                 for node, res in sharing.get("shared_resources", {}).items():
                     for r_type, amt in res.items():
