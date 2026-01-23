@@ -1357,6 +1357,7 @@ def test(config: Path, strategy: str, tasks: int, node: Optional[str]) -> None:
     
     async def _test():
         import ray
+        from ray.util.placement_group import placement_group
         
         # Initialize Ray
         ray.init(address="ray://192.168.1.100:10001")
@@ -1384,23 +1385,54 @@ def test(config: Path, strategy: str, tasks: int, node: Optional[str]) -> None:
             # Submit tasks with chosen strategy
             refs = []
             
-            for i in range(tasks):
-                if strategy == "spread":
-                    remote_fn = test_task.options(scheduling_strategy="SPREAD")
-                elif strategy == "node_specific" and node:
-                    # Map node name to IP
-                    node_ip_map = {
-                        "gpu-master": "192.168.1.100",
-                        "gpu1": "192.168.1.101",
-                        "gpu2": "192.168.1.102",
-                        "ml-server": "192.168.1.102",
-                    }
-                    target_ip = node_ip_map.get(node, node)
-                    remote_fn = test_task.options(resources={f"node:{target_ip}": 0.001})
-                else:
-                    remote_fn = test_task.options()
+            if strategy == "spread":
+                # Create placement group for spread strategy
+                # Create bundles for each available node with enough resources
+                bundles = [{"CPU": 1.0} for _ in range(3)]  # 3 nodes in cluster, 1 CPU each
+                pg = placement_group(bundles, strategy="STRICT_SPREAD")
                 
-                refs.append(remote_fn.remote(i))
+                # Wait for placement group to be ready
+                ray.get(pg.ready())
+                
+                # Submit tasks using placement group
+                for i in range(tasks):
+                    bundle_index = i % 3  # Round-robin across bundles
+                    remote_fn = test_task.options(
+                        placement_group=pg,
+                        placement_group_bundle_index=bundle_index
+                    )
+                    refs.append(remote_fn.remote(i))
+                    
+            elif strategy == "node_specific" and node:
+                # Map node name to IP
+                node_ip_map = {
+                    "gpu-master": "192.168.1.100",
+                    "gpu1": "192.168.1.101",
+                    "gpu2": "192.168.1.102",
+                    "ml-server": "192.168.1.102",
+                }
+                target_ip = node_ip_map.get(node, node)
+                remote_fn = test_task.options(resources={f"node:{target_ip}": 0.001})
+            else:
+                remote_fn = test_task.options()
+            
+            if strategy != "spread":
+                # For non-spread strategies, submit tasks directly
+                for i in range(tasks):
+                    if strategy == "node_specific" and node:
+                        # Map node name to IP
+                        node_ip_map = {
+                            "gpu-master": "192.168.1.100",
+                            "gpu1": "192.168.1.101",
+                            "gpu2": "192.168.1.102",
+                            "ml-server": "192.168.1.102",
+                        }
+                        target_ip = node_ip_map.get(node, node)
+                        remote_fn = test_task.options(resources={f"node:{target_ip}": 0.001})
+                    else:
+                        remote_fn = test_task.options()
+                    
+                    refs.append(remote_fn.remote(i))
             
             # Wait for completion
             console.print(f"[cyan]Submitting {tasks} tasks with {strategy} strategy...[/cyan]")
@@ -1431,6 +1463,13 @@ def test(config: Path, strategy: str, tasks: int, node: Optional[str]) -> None:
                 distribution_table.add_row(node_ip, str(count), f"{percentage:.1f}%")
             
             console.print(distribution_table)
+            
+            # Clean up placement group if used
+            if strategy == "spread":
+                try:
+                    ray.remove_placement_group(pg)
+                except:
+                    pass
             
         finally:
             ray.shutdown()
