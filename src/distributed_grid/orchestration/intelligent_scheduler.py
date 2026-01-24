@@ -26,6 +26,9 @@ from distributed_grid.orchestration.resource_sharing_manager import (
     ResourceSharingManager,
     AllocationPriority,
 )
+from distributed_grid.orchestration.resource_boost_manager import (
+    ResourceBoostManager,
+)
 from distributed_grid.config import ClusterConfig, NodeConfig
 
 logger = structlog.get_logger(__name__)
@@ -120,11 +123,13 @@ class IntelligentScheduler:
         default_strategy: SchedulingStrategy = SchedulingStrategy.BEST_FIT,
         prediction_window: timedelta = timedelta(minutes=15),
         load_threshold: float = 20.0,
+        boost_manager: Optional[ResourceBoostManager] = None,
     ):
         """Initialize the intelligent scheduler."""
         self.cluster_config = cluster_config
         self.metrics_collector = metrics_collector
         self.resource_sharing_manager = resource_sharing_manager
+        self.boost_manager = boost_manager
         self.default_strategy = default_strategy
         self.prediction_window = prediction_window
         self.load_threshold = load_threshold
@@ -177,7 +182,7 @@ class IntelligentScheduler:
         snapshots = self.metrics_collector.get_all_latest_snapshots()
         
         # Filter nodes based on constraints
-        eligible_nodes = self._filter_eligible_nodes(request, snapshots)
+        eligible_nodes = await self._filter_eligible_nodes(request, snapshots)
         
         if not eligible_nodes:
             # Try to request shared resources
@@ -207,7 +212,7 @@ class IntelligentScheduler:
         
         return decision
         
-    def _filter_eligible_nodes(
+    async def _filter_eligible_nodes(
         self,
         request: SchedulingRequest,
         snapshots: Dict[str, ResourceSnapshot],
@@ -223,20 +228,20 @@ class IntelligentScheduler:
             if request.anti_affinity_nodes and node_id in request.anti_affinity_nodes:
                 continue
                 
-            # Check resource requirements
-            if not self._meets_requirements(snapshot, request.requirements):
+            # Check resource requirements (including boosted resources)
+            if not await self._meets_requirements(snapshot, request.requirements):
                 continue
                 
             eligible.append(node_id)
             
         return eligible
         
-    def _meets_requirements(
+    async def _meets_requirements(
         self,
         snapshot: ResourceSnapshot,
         requirements: ResourceRequirement,
     ) -> bool:
-        """Check if a node meets task requirements."""
+        """Check if a node meets task requirements, including boosted resources."""
         # 1. Load Average Protection (Master Node specific)
         # If load average is extremely high, reject new tasks to prevent freezing
         if snapshot.node_id == "gpu-master" and snapshot.load_avg[0] > self.load_threshold:
@@ -248,16 +253,37 @@ class IntelligentScheduler:
             )
             return False
 
-        # 2. CPU requirement
-        if snapshot.cpu_available < requirements.cpu_count:
+        # Get boosted resources for this node if boost manager is available
+        boosted_cpu = 0.0
+        boosted_memory_gb = 0.0
+        boosted_gpu = 0.0
+        
+        if self.boost_manager:
+            try:
+                active_boosts = await self.boost_manager.get_active_boosts(target_node=snapshot.node_id)
+                for boost in active_boosts:
+                    if boost.resource_type.value.lower() == "cpu":
+                        boosted_cpu += boost.amount
+                    elif boost.resource_type.value.lower() == "memory":
+                        boosted_memory_gb += boost.amount  # Already in GB
+                    elif boost.resource_type.value.lower() == "gpu":
+                        boosted_gpu += boost.amount
+            except Exception as e:
+                logger.warning(f"Failed to check boosts for node {snapshot.node_id}: {e}")
+
+        # 2. CPU requirement (including boosted CPU)
+        cpu_available = snapshot.cpu_available + boosted_cpu
+        if cpu_available < requirements.cpu_count:
             return False
             
-        # Memory requirement
-        if snapshot.memory_available < requirements.memory_mb * 1024 * 1024:
+        # Memory requirement (including boosted memory)
+        memory_available = snapshot.memory_available + (boosted_memory_gb * 1024 * 1024 * 1024)
+        if memory_available < requirements.memory_mb * 1024 * 1024:
             return False
             
-        # GPU requirement
-        if snapshot.gpu_available < requirements.gpu_count:
+        # GPU requirement (including boosted GPU)
+        gpu_available = snapshot.gpu_available + boosted_gpu
+        if gpu_available < requirements.gpu_count:
             return False
             
         # GPU memory requirement (approximate)

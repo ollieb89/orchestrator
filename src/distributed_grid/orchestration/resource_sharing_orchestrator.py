@@ -40,11 +40,20 @@ class ResourceSharingOrchestrator:
         cluster_config: ClusterConfig,
         ssh_manager: SSHManager,
         ray_dashboard_address: str = "http://localhost:8265",
+        boost_manager: Optional[Any] = None,
     ):
-        """Initialize the orchestrator."""
+        """Initialize the orchestrator.
+        
+        Args:
+            cluster_config: Cluster configuration
+            ssh_manager: SSH manager for node access
+            ray_dashboard_address: Ray dashboard address
+            boost_manager: Optional resource boost manager for boost-aware scheduling
+        """
         self.cluster_config = cluster_config
         self.ssh_manager = ssh_manager
         self.ray_dashboard_address = ray_dashboard_address
+        self.boost_manager = boost_manager
         
         # Components
         self.metrics_collector: Optional[ResourceMetricsCollector] = None
@@ -125,6 +134,7 @@ class ResourceSharingOrchestrator:
             self.cluster_config,
             self.metrics_collector,
             self.resource_sharing_manager,
+            boost_manager=self.boost_manager,
         )
         
         # Map string mode to enum
@@ -142,6 +152,7 @@ class ResourceSharingOrchestrator:
             self.ray_dashboard_address,
             mode=mode,
             metrics_collector=self.metrics_collector,
+            boost_manager=self.boost_manager,
             resource_sharing_manager=self.resource_sharing_manager,
             intelligent_scheduler=self.intelligent_scheduler,
         )
@@ -152,6 +163,33 @@ class ResourceSharingOrchestrator:
             self.ssh_manager,
             self.cluster_config
         )
+        
+        # Set up automatic offloading callback for boost manager if available
+        if self.boost_manager and hasattr(self.boost_manager, 'on_boost_activated'):
+            # Set callback to trigger automatic offloading when boost activates
+            async def trigger_automatic_offloading(boost):
+                """Trigger automatic offloading when a boost is activated on master node."""
+                if boost.target_node == "gpu-master" and self.enhanced_executor and self.offloading_detector:
+                    try:
+                        logger.info(f"Boost {boost.boost_id} activated, triggering automatic offloading")
+                        # Detect offloadable processes
+                        recommendations = await self.offloading_detector.detect_offloading_candidates()
+                        if recommendations:
+                            logger.info(f"Found {len(recommendations)} processes to offload")
+                            # Execute offloading for suitable processes
+                            for rec in recommendations[:5]:  # Limit to 5 processes at a time
+                                try:
+                                    task_id = await self.enhanced_executor.execute_offloading(rec)
+                                    logger.info(f"Offloaded process {rec.process.pid} to {rec.target_node}, task_id={task_id}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to offload process {rec.process.pid}: {e}")
+                        else:
+                            logger.info("No offloadable processes found")
+                    except Exception as e:
+                        logger.error(f"Error in automatic offloading trigger: {e}")
+            
+            self.boost_manager.on_boost_activated = trigger_automatic_offloading
+            logger.info("Automatic offloading callback configured for boost manager")
         
         # Initialize distributed memory pool
         self.distributed_memory_pool = DistributedMemoryPool(self.cluster_config)

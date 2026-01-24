@@ -10,7 +10,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, UTC, timedelta
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any, Set, Callable, Awaitable
 from enum import Enum
 
 import ray
@@ -69,6 +69,7 @@ class ResourceBoostManager:
         resource_sharing_manager: ResourceSharingManager,
         default_boost_duration: timedelta = timedelta(hours=1),
         persistence: Optional[ResourceBoostPersistence] = None,
+        on_boost_activated: Optional[Callable[[ResourceBoost], Awaitable[None]]] = None,
     ):
         """Initialize the resource boost manager.
         
@@ -78,11 +79,14 @@ class ResourceBoostManager:
             resource_sharing_manager: Resource sharing manager for allocations
             default_boost_duration: Default duration for boosts if not specified
             persistence: Optional persistence instance. If None, creates default.
+            on_boost_activated: Optional async callback called when a boost is successfully activated.
+                               Receives the ResourceBoost object as argument.
         """
         self.cluster_config = cluster_config
         self.metrics_collector = metrics_collector
         self.resource_sharing_manager = resource_sharing_manager
         self.default_boost_duration = default_boost_duration
+        self.on_boost_activated = on_boost_activated
         
         # Initialize persistence
         self._persistence = persistence or ResourceBoostPersistence()
@@ -192,6 +196,15 @@ class ResourceBoostManager:
             logger.info(f"Resource boost created: {boost_id} "
                        f"({request.amount} {request.resource_type.value} "
                        f"from {source_node} to {request.target_node})")
+            
+            # Trigger automatic offloading if callback is set and boost is for master node
+            if self.on_boost_activated and boost.target_node == "gpu-master":
+                try:
+                    await self.on_boost_activated(boost)
+                    logger.info(f"Automatic offloading triggered for boost {boost_id}")
+                except Exception as e:
+                    # Log error but don't fail the boost creation
+                    logger.warning(f"Failed to trigger automatic offloading for boost {boost_id}: {e}")
             
             return boost_id
             
@@ -402,20 +415,35 @@ class ResourceBoostManager:
             return
         
         try:
+            # Get target node configuration for node-specific placement
+            target_node_config = self.cluster_config.get_node_by_name(boost.target_node)
+            if not target_node_config:
+                logger.warning(f"Target node {boost.target_node} not found in cluster config")
+                return
+            
             # Create a placement group to reserve resources on target node
             # Ray placement groups expect a list of bundles
             if boost.resource_type == ResourceType.MEMORY:
                 # Convert memory to MB for Ray resources
                 memory_mb = int(boost.amount * 1024)  # Convert GB to MB
-                bundles_list = [{"memory": memory_mb}]
+                bundle = {"memory": memory_mb}
             else:
-                bundles_list = [{boost.resource_type.value.upper(): boost.amount}]
+                bundle = {boost.resource_type.value.upper(): boost.amount}
             
-            pg = placement_group(bundles_list, strategy="STRICT_SPREAD", name=pg_name)
+            # Add node constraint to pin resources to target node
+            # Use node IP/hostname as resource constraint
+            node_resource_key = f"node:{target_node_config.host}"
+            bundle[node_resource_key] = 0.001
+            
+            bundles_list = [bundle]
+            
+            # Use PACK strategy to place all bundles on the same node
+            # STRICT_PACK would be ideal but may fail if node is full, so use PACK
+            pg = placement_group(bundles_list, strategy="PACK", name=pg_name)
             ray.get(pg.ready())
             boost.ray_placement_group = pg_name
             logger.info(f"Created placement group {pg_name} for {boost.resource_type.value} boost "
-                       f"({boost.amount}) on {boost.target_node}")
+                       f"({boost.amount}) on {boost.target_node} (host: {target_node_config.host})")
         except Exception as e:
             logger.warning(f"Failed to create placement group for boost: {e}")
             # Don't fail the boost, just log the issue

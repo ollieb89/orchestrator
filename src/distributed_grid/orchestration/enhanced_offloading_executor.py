@@ -38,6 +38,9 @@ from distributed_grid.orchestration.intelligent_scheduler import (
     SchedulingStrategy,
     TaskPriority,
 )
+from distributed_grid.orchestration.resource_boost_manager import (
+    ResourceBoostManager,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -93,6 +96,7 @@ class EnhancedOffloadingExecutor:
         metrics_collector: Optional[ResourceMetricsCollector] = None,
         resource_sharing_manager: Optional[ResourceSharingManager] = None,
         intelligent_scheduler: Optional[IntelligentScheduler] = None,
+        boost_manager: Optional[ResourceBoostManager] = None,
     ):
         """Initialize the enhanced offloading executor."""
         self.ssh_manager = ssh_manager
@@ -104,6 +108,7 @@ class EnhancedOffloadingExecutor:
         self.metrics_collector = metrics_collector
         self.resource_sharing_manager = resource_sharing_manager
         self.intelligent_scheduler = intelligent_scheduler
+        self.boost_manager = boost_manager
         
         # Active tasks and history
         self._active_tasks: Dict[str, Dict[str, Any]] = {}
@@ -141,6 +146,7 @@ class EnhancedOffloadingExecutor:
                 self.cluster_config,
                 self.metrics_collector,
                 self.resource_sharing_manager,
+                boost_manager=self.boost_manager,
             )
             
         logger.info(
@@ -260,15 +266,46 @@ class EnhancedOffloadingExecutor:
         snapshots = self.metrics_collector.get_all_latest_snapshots()
         cluster_summary = self.metrics_collector.get_cluster_summary()
         
-        # Check if master has resources
+        # Check for active boosts on master node
+        master_has_active_boosts = False
+        boosted_resources = {"cpu": 0.0, "memory": 0.0, "gpu": 0.0}
+        
+        if self.boost_manager:
+            try:
+                active_boosts = await self.boost_manager.get_active_boosts(target_node="gpu-master")
+                if active_boosts:
+                    master_has_active_boosts = True
+                    # Aggregate boosted resources
+                    for boost in active_boosts:
+                        if boost.resource_type.value.lower() == "cpu":
+                            boosted_resources["cpu"] += boost.amount
+                        elif boost.resource_type.value.lower() == "memory":
+                            boosted_resources["memory"] += boost.amount  # Already in GB
+                        elif boost.resource_type.value.lower() == "gpu":
+                            boosted_resources["gpu"] += boost.amount
+                    decision.reasoning.append(
+                        f"Active boosts detected on master: "
+                        f"CPU={boosted_resources['cpu']:.1f}, "
+                        f"Memory={boosted_resources['memory']:.1f}GB, "
+                        f"GPU={boosted_resources['gpu']:.0f}"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to check active boosts: {e}")
+        
+        # Check if master has resources (including boosted resources)
         master_snapshot = snapshots.get("gpu-master")
         master_has_resources = False
         
         if master_snapshot:
+            # Calculate available resources including boosts
+            cpu_available = master_snapshot.cpu_available + boosted_resources["cpu"]
+            memory_available = master_snapshot.memory_available + (boosted_resources["memory"] * 1024 * 1024 * 1024)
+            gpu_available = master_snapshot.gpu_available + boosted_resources["gpu"]
+            
             master_has_resources = (
-                master_snapshot.cpu_available >= analysis.cpu_requirement and
-                master_snapshot.memory_available >= analysis.memory_requirement_mb * 1024 * 1024 and
-                master_snapshot.gpu_available >= analysis.gpu_requirement
+                cpu_available >= analysis.cpu_requirement and
+                memory_available >= analysis.memory_requirement_mb * 1024 * 1024 and
+                gpu_available >= analysis.gpu_requirement
             )
         memory_pressure_offload = await self._should_offload_for_memory(
             "gpu-master",
@@ -286,7 +323,10 @@ class EnhancedOffloadingExecutor:
                 decision.mode = OffloadingMode.SHARE_AND_OFFLOAD
                 decision.target_node = "gpu-master"
                 decision.use_shared_resources = True
-                decision.reasoning.append("Master has available resources, using shared resources")
+                if master_has_active_boosts:
+                    decision.reasoning.append("Master has boosted resources available, using boosted resources")
+                else:
+                    decision.reasoning.append("Master has available resources, using shared resources")
             else:
                 decision.mode = OffloadingMode.OFFLOAD_ONLY
                 decision.target_node = recommendation.target_node
@@ -306,7 +346,10 @@ class EnhancedOffloadingExecutor:
                 decision.mode = OffloadingMode.SHARE_AND_OFFLOAD
                 decision.target_node = "gpu-master"
                 decision.use_shared_resources = True
-                decision.reasoning.append(f"Cluster pressure low ({overall_pressure:.2f}), using master resources")
+                if master_has_active_boosts:
+                    decision.reasoning.append(f"Cluster pressure low ({overall_pressure:.2f}), using master boosted resources")
+                else:
+                    decision.reasoning.append(f"Cluster pressure low ({overall_pressure:.2f}), using master resources")
             elif analysis.can_share_resources and overall_pressure < 0.9:
                 # Try to request shared resources
                 decision.mode = OffloadingMode.DYNAMIC_BALANCING
