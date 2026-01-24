@@ -120,9 +120,12 @@ class RayClusterManager:
 
             redis_address = f"{head_ip}:{port}"
             
-            # Wait for head node to be fully ready
+            # Wait for head node to be fully ready (give GCS time to initialize)
             console.print("[blue]Waiting for head node to be fully ready...[/blue]")
-            await asyncio.sleep(10)
+            await asyncio.sleep(30)
+            
+            # Verify GCS is ready before starting workers
+            await self._wait_for_gcs_ready(head_ip, port)
             
             # Start worker nodes
             if worker_nodes:
@@ -176,7 +179,7 @@ class RayClusterManager:
             f"--include-dashboard=true"
         )
         
-        result = await self.ssh_manager.run_command(head_node.name, start_cmd, timeout=30)
+        result = await self.ssh_manager.run_command(head_node.name, start_cmd, timeout=60)
         if result.exit_status != 0:
             raise RuntimeError(f"Failed to start head node: {result.stderr}")
 
@@ -200,6 +203,45 @@ class RayClusterManager:
                 return result.stdout.strip()
 
         raise RuntimeError(f"Failed to determine node IP for {node.name}")
+    
+    async def _wait_for_gcs_ready(self, head_ip: str, port: int, max_retries: int = 15) -> None:
+        """Wait for GCS server to be ready and responsive.
+        
+        Verifies that the GCS server is listening on its port before allowing
+        workers to connect. This prevents "RPC error: Deadline Exceeded" failures.
+        
+        Args:
+            head_ip: IP address of the head node
+            port: GCS server port (Redis port)
+            max_retries: Maximum number of connection attempts
+            
+        Raises:
+            RuntimeError: If GCS doesn't become ready after max_retries
+        """
+        console.print(f"[blue]Waiting for GCS to be ready at {head_ip}:{port}...[/blue]")
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Try to connect to the GCS port
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)  # 2 second timeout per connection attempt
+                result = sock.connect_ex((head_ip, port))
+                sock.close()
+                
+                if result == 0:
+                    console.print(f"[green]✓ GCS is ready at {head_ip}:{port}[/green]")
+                    return
+            except Exception as e:
+                logger.debug("GCS connection attempt failed", attempt=attempt, error=str(e))
+            
+            if attempt < max_retries:
+                console.print(f"[yellow]GCS not ready yet... (attempt {attempt}/{max_retries})[/yellow]")
+                await asyncio.sleep(2)  # Wait 2 seconds before retry
+        
+        raise RuntimeError(
+            f"GCS server not responding at {head_ip}:{port} after {max_retries} attempts. "
+            f"Check that the head node is running and ports are accessible."
+        )
     
     async def _start_worker_nodes(self, worker_nodes: List, redis_address: str) -> None:
         """Start Ray worker nodes."""
@@ -256,7 +298,7 @@ class RayClusterManager:
             f"--max-worker-port={max_worker_port}"
         )
         
-        result = await self.ssh_manager.run_command(worker_node.name, start_cmd, timeout=30)
+        result = await self.ssh_manager.run_command(worker_node.name, start_cmd, timeout=60)
         if result.exit_status != 0:
             raise RuntimeError(f"Failed to start worker {worker_node.name}: {result.stderr}")
     
