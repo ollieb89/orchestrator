@@ -8,7 +8,7 @@ import time
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Callable
 from enum import Enum
 
 import ray
@@ -151,13 +151,42 @@ class ResourceMetricsCollector:
         
         # Initialize Ray connection
         if not ray.is_initialized():
-            ray.init(address="auto")
+            try:
+                ray.init(address="auto", ignore_reinit_error=True)
+                # Wait a moment for Ray to fully initialize
+                await asyncio.sleep(0.5)
+                # Verify Ray is actually ready by checking if we can access the state API
+                try:
+                    ray.cluster_resources()
+                except Exception as e:
+                    logger.warning(
+                        "Ray initialized but state API not ready yet",
+                        error=str(e),
+                        retrying=True
+                    )
+                    # Wait a bit longer and retry
+                    await asyncio.sleep(1.0)
+                    ray.cluster_resources()  # Will raise if still not ready
+            except Exception as e:
+                logger.error(
+                    "Failed to initialize Ray connection",
+                    error=str(e),
+                    message="Resource metrics will use fallback methods"
+                )
+                # Continue anyway - we can still collect metrics via SSH
         
         # Start monitoring loop
         self._monitoring_task = asyncio.create_task(self._monitoring_loop())
         
-        # Initial collection
-        await self._collect_all_metrics()
+        # Initial collection (will handle errors gracefully)
+        try:
+            await self._collect_all_metrics()
+        except Exception as e:
+            logger.warning(
+                "Initial metrics collection failed",
+                error=str(e),
+                message="Monitoring will continue with retries"
+            )
         
     async def stop(self) -> None:
         """Stop resource monitoring."""
@@ -186,12 +215,36 @@ class ResourceMetricsCollector:
 
     async def _collect_all_metrics(self) -> None:
         """Collect metrics from all nodes in the cluster."""
-        # Get Ray cluster resources
-        self._ray_cluster_resources = ray.cluster_resources()
-        self._available_resources = ray.available_resources()
+        # Get Ray cluster resources (with error handling)
+        try:
+            if ray.is_initialized():
+                self._ray_cluster_resources = ray.cluster_resources()
+                self._available_resources = ray.available_resources()
+            else:
+                self._ray_cluster_resources = {}
+                self._available_resources = {}
+        except Exception as e:
+            logger.warning(
+                "Failed to get Ray cluster resources",
+                error=str(e),
+                message="Using fallback metrics collection"
+            )
+            self._ray_cluster_resources = {}
+            self._available_resources = {}
         
         # Collect metrics from each node
-        ray_nodes = ray.nodes()
+        try:
+            if ray.is_initialized():
+                ray_nodes = ray.nodes()
+            else:
+                ray_nodes = []
+        except Exception as e:
+            logger.warning(
+                "Failed to get Ray nodes",
+                error=str(e),
+                message="Using configuration-based node discovery"
+            )
+            ray_nodes = []
         
         for node_config in self.cluster_config.nodes:
             node_id = node_config.name

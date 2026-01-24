@@ -20,7 +20,34 @@ Optimized distributed GPU cluster orchestration tool built with Python 3.11+.
 
 ## Installation
 
-### Using uv (Recommended)
+### System-Wide CLI Installation (Recommended)
+
+To install the `grid` CLI command system-wide so it's available from any directory:
+
+```bash
+# Using Make (easiest)
+make install-system
+
+# Or manually with Poetry
+poetry install
+POETRY_VENV=$(poetry env info --path)
+mkdir -p ~/.local/bin
+ln -sf "$POETRY_VENV/bin/grid" ~/.local/bin/grid
+
+# Ensure ~/.local/bin is in your PATH
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+**Verify installation:**
+```bash
+make verify-cli
+# or
+grid --help
+```
+
+For detailed installation instructions and troubleshooting, see [System-Wide CLI Setup Guide](docs/cli_system_wide_setup.md).
+
+### Using uv (Recommended for Development)
 
 ```bash
 # Clone the repository
@@ -32,6 +59,9 @@ uv sync
 
 # Activate the virtual environment
 source .venv/bin/activate
+
+# Use CLI with uv run
+uv run grid --help
 ```
 
 ### Using pip
@@ -47,6 +77,9 @@ source .venv/bin/activate
 
 # Install dependencies
 pip install -e ".[dev]"
+
+# Install system-wide (optional)
+pip install --user --editable .
 ```
 
 ## Quick Start
