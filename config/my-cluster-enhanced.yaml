@@ -4,6 +4,10 @@ execution:
   retry_attempts: 3
   timeout_seconds: 3600
   working_directory: /tmp/grid
+  runtime_env:
+    env_vars:
+        NVM_DIR: "/home/ob/.nvm"
+        PATH: "/home/ob/.nvm/versions/node/v22.21.1/bin:/usr/local/bin:/usr/bin:/bin"
   # Resource sharing configuration
   resource_sharing:
     enabled: true

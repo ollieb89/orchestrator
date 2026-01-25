@@ -80,6 +80,43 @@ class ResourceSharingOrchestrator:
         # Track PIDs being offloaded to prevent duplicate submissions
         self._offloading_pids: set = set()
         
+        def _submit_offload_job(self, process_info, target_node):
+    """Submit process to Ray for execution on target node."""
+    
+    # Detect if this is a Node.js process
+    cmdline = process_info.get('cmdline', [])
+    is_node_process = any('node' in str(cmd).lower() for cmd in cmdline)
+    
+    # Build the command
+    if is_node_process and target_node == 'gpu1':
+        # Use wrapper for Node.js on gpu1
+        original_cmd = ' '.join(cmdline)
+        command = f"/home/ob/bin/node-wrapper.sh {original_cmd}"
+    else:
+        command = ' '.join(cmdline)
+    
+    # Configure runtime environment based on target node user
+    runtime_env = {}
+    if target_node == 'gpu1':
+        runtime_env = {
+            "env_vars": {
+                "NVM_DIR": "/home/ob/.nvm",
+                "PATH": "/home/ob/.nvm/versions/node/v22.21.1/bin:/home/ob/.local/bin:/usr/local/bin:/usr/bin:/bin",
+                "HOME": "/home/ob",
+                "USER": "ob"
+            }
+        }
+    
+    # Submit the job
+    job_id = ray.job_submission.submit_job(
+        entrypoint=command,
+        runtime_env=runtime_env,
+        resources={f"node:{target_node}": 1}
+    )
+    
+    return job_id
+        self._monitoring_task: Optional[asyncio.Task] = None
+        
     async def initialize(self) -> None:
         """Initialize all components."""
         if self._initialized:
