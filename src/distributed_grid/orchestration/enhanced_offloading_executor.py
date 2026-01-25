@@ -156,6 +156,20 @@ class EnhancedOffloadingExecutor:
             dashboard=self.ray_dashboard_address,
         )
         
+    def validate_offload_target(self, recommendation: OffloadingRecommendation) -> Tuple[bool, str]:
+        """Validate that the offload target is allowed.
+
+        Returns:
+            Tuple of (is_valid, reason)
+        """
+        head_node_id = self.cluster_config.nodes[0].name if self.cluster_config.nodes else None
+
+        # Never allow offloading TO the head node
+        if recommendation.target_node == head_node_id:
+            return False, f"Cannot offload TO head node ({head_node_id})"
+
+        return True, "Valid target"
+
     async def execute_offloading(
         self,
         recommendation: OffloadingRecommendation,
@@ -163,6 +177,11 @@ class EnhancedOffloadingExecutor:
         runtime_env: Optional[Dict] = None,
     ) -> str:
         """Execute offloading with intelligent resource sharing."""
+        # Validate target first
+        is_valid, reason = self.validate_offload_target(recommendation)
+        if not is_valid:
+            raise ValueError(reason)
+
         task_id = f"enhanced_offload_{int(time.time())}_{recommendation.process.pid}"
         
         # Analyze resource requirements
