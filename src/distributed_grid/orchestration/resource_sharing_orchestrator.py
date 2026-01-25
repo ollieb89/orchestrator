@@ -76,6 +76,9 @@ class ResourceSharingOrchestrator:
         # Registry for objects that can be spilled to remote memory during pressure
         self._spillable_objects: Dict[str, Dict[str, Any]] = {}
         self._spilled_objects: Dict[str, str] = {}  # object_id -> block_id
+
+        # Track PIDs being offloaded to prevent duplicate submissions
+        self._offloading_pids: set = set()
         
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -259,9 +262,23 @@ class ResourceSharingOrchestrator:
 
             # In critical mode, be more aggressive
             limit = 5 if is_critical else 2
-            
+
+            # Filter out PIDs already being offloaded
+            node_recs = [r for r in node_recs if r.process.pid not in self._offloading_pids]
+
+            if not node_recs:
+                logger.debug("All candidates already being offloaded", node=node_id)
+                return
+
             # Execute recommendations
             for rec in node_recs[:limit]:
+                # Skip if already being offloaded (double-check)
+                if rec.process.pid in self._offloading_pids:
+                    continue
+
+                # Mark as being offloaded
+                self._offloading_pids.add(rec.process.pid)
+
                 logger.info(
                     "Mitigating pressure: Offloading process",
                     node=node_id,
@@ -270,7 +287,11 @@ class ResourceSharingOrchestrator:
                     target=rec.target_node,
                     critical=is_critical
                 )
-                await self.execute_offloading(rec)
+                try:
+                    await self.execute_offloading(rec)
+                finally:
+                    # Remove from tracking after attempt (success or failure)
+                    self._offloading_pids.discard(rec.process.pid)
                 
             # If still critical after offloading processes, try spilling objects
             if is_critical and resource_type == ResourceType.MEMORY:
