@@ -44,6 +44,7 @@ class ProcessInfo:
     gpu_memory_mb: int = 0
     gpu_utilization: float = 0.0
     user: str = ""
+    exe: Optional[str] = None
     start_time: Optional[datetime] = None
     parent_pid: Optional[int] = None
     process_type: Optional[ProcessType] = None
@@ -248,7 +249,7 @@ def get_process_info():
     processes = []
     
     for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'cpu_percent', 
-                                   'memory_info', 'username', 'create_time', 'ppid']):
+                                   'memory_info', 'username', 'create_time', 'ppid', 'exe']):
         try:
             pinfo = proc.info
             
@@ -263,6 +264,7 @@ def get_process_info():
                 "memory_mb": (pinfo['memory_info'].rss / (1024*1024)) if pinfo['memory_info'] else 0,
                 "gpu_memory_mb": gpu_info.get("memory_mb", 0),
                 "user": pinfo['username'] or "",
+                "exe": pinfo['exe'] or "",
                 "start_time": datetime.fromtimestamp(pinfo['create_time'], tz=timezone.utc).isoformat() if pinfo['create_time'] else None,
                 "parent_pid": pinfo['ppid'],
             }
@@ -316,6 +318,7 @@ if __name__ == "__main__":
                     memory_mb=int(proc_data["memory_mb"]),
                     gpu_memory_mb=proc_data["gpu_memory_mb"],
                     user=proc_data["user"],
+                    exe=proc_data["exe"],
                     start_time=datetime.fromisoformat(proc_data["start_time"]) if proc_data["start_time"] else None,
                     parent_pid=proc_data["parent_pid"],
                 )
