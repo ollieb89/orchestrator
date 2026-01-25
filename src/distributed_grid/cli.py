@@ -28,8 +28,38 @@ from distributed_grid.orchestration.resource_sharing_orchestrator import Resourc
 from distributed_grid.orchestration.resource_sharing_manager import ResourceType, AllocationPriority
 from distributed_grid.orchestration.offloading_detector import OffloadingDetector
 from distributed_grid.orchestration.offloading_executor import OffloadingExecutor
+from distributed_grid.orchestration.auto_offload_state import AutoOffloadState
 
 console = Console()
+
+
+def parse_threshold(threshold_args: tuple[str, ...]) -> dict[str, int]:
+    """Parse threshold arguments.
+
+    Args:
+        threshold_args: Tuple of threshold strings like ("70",) or ("cpu=80", "memory=65")
+
+    Returns:
+        Dict with cpu, memory, gpu thresholds
+    """
+    # Default thresholds
+    thresholds = {"cpu": 80, "memory": 70, "gpu": 90}
+
+    if not threshold_args:
+        return thresholds
+
+    for arg in threshold_args:
+        if "=" in arg:
+            # Key=value format: cpu=80, memory=65, gpu=90
+            key, value = arg.split("=", 1)
+            key = key.strip().lower()
+            if key in thresholds:
+                thresholds[key] = int(value.strip())
+        else:
+            # Single value format: applies to memory
+            thresholds["memory"] = int(arg.strip())
+
+    return thresholds
 
 
 @click.group()
@@ -2249,6 +2279,80 @@ def cancel(task_id: str, config: Path, ray_dashboard: str) -> None:
             raise click.ClickException(str(e))
     
     asyncio.run(_cancel())
+
+
+@offload.command()
+@click.option(
+    "--enable",
+    is_flag=True,
+    help="Enable automatic offloading",
+)
+@click.option(
+    "--disable",
+    is_flag=True,
+    help="Disable automatic offloading",
+)
+@click.option(
+    "--status",
+    "show_status",
+    is_flag=True,
+    help="Show current auto-offload status",
+)
+@click.option(
+    "--threshold",
+    multiple=True,
+    help="Set thresholds (e.g., --threshold 70 or --threshold cpu=80 --threshold memory=65)",
+)
+def auto(enable: bool, disable: bool, show_status: bool, threshold: tuple[str, ...]) -> None:
+    """Manage automatic offloading.
+
+    Examples:
+        grid offload auto --enable
+        grid offload auto --enable --threshold 70
+        grid offload auto --enable --threshold cpu=80 --threshold memory=65 --threshold gpu=90
+        grid offload auto --disable
+        grid offload auto --status
+    """
+    setup_logging()
+
+    # Validate mutually exclusive options
+    options_count = sum([enable, disable, show_status])
+    if options_count == 0:
+        console.print("[yellow]Please specify --enable, --disable, or --status[/yellow]")
+        return
+    if options_count > 1:
+        console.print("[red]Cannot use --enable, --disable, and --status together[/red]")
+        return
+
+    state = AutoOffloadState()
+
+    if enable:
+        thresholds = parse_threshold(threshold)
+        state.enable(cpu=thresholds["cpu"], memory=thresholds["memory"], gpu=thresholds["gpu"])
+        console.print("[green]Auto-offload enabled[/green]")
+        console.print(f"  CPU threshold: {thresholds['cpu']}%")
+        console.print(f"  Memory threshold: {thresholds['memory']}%")
+        console.print(f"  GPU threshold: {thresholds['gpu']}%")
+
+    elif disable:
+        state.disable()
+        console.print("[yellow]Auto-offload disabled[/yellow]")
+
+    elif show_status:
+        status_str = "[green]Enabled[/green]" if state.enabled else "[red]Disabled[/red]"
+        console.print(f"[bold]Auto-Offload Status:[/bold] {status_str}")
+        console.print(f"\n[bold]Thresholds:[/bold]")
+        console.print(f"  CPU: {state.thresholds.get('cpu', 80)}%")
+        console.print(f"  Memory: {state.thresholds.get('memory', 70)}%")
+        console.print(f"  GPU: {state.thresholds.get('gpu', 90)}%")
+
+        if state.active_offloads:
+            console.print(f"\n[bold]Active Offloads:[/bold] {len(state.active_offloads)}")
+            for offload in state.active_offloads:
+                console.print(f"  - Task {offload.get('task_id', 'N/A')}: PID {offload.get('pid', 'N/A')} -> {offload.get('target_node', 'N/A')}")
+
+        if state.recent_events:
+            console.print(f"\n[bold]Recent Events:[/bold] {len(state.recent_events)} event(s)")
 
 
 @offload.command()
