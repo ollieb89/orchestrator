@@ -188,7 +188,7 @@ async def test_offloadability_checks():
         (ProcessInfo(1001, "good", ["python", "script.py"], 60.0, 500), True, "CPU-intensive process"),
         (ProcessInfo(1002, "memory", ["python", "script.py"], 10.0, 2048), True, "Memory-intensive process (2048MB)"),
         (ProcessInfo(1003, "missing_cmd", [], 10.0, 2048), False, "Cannot offload: missing command line arguments"),
-        (ProcessInfo(1005, "invalid_cmd", ["next-server (v15.5.9)"], 10.0, 2048), False, "Invalid command line format"),
+        (ProcessInfo(1005, "invalid_cmd", ["next-server (v15.5.9)"], 10.0, 2048), True, "Memory-intensive process (2048MB)"),
     ]
     
     for process, expected, reason_part in test_cases:
@@ -198,6 +198,51 @@ async def test_offloadability_checks():
         
         status = "✓" if is_offloadable == expected else "✗"
         print(f"  {status} PID {process.pid} ({process.name}): {is_offloadable} - {reason}")
+
+    print()
+
+
+async def test_migration_script_generation():
+    """Test migration script generation."""
+    from distributed_grid.orchestration.offloading_executor import ProcessMigrator
+    from distributed_grid.core.ssh_manager import SSHManager
+    
+    print("Testing migration script generation:")
+    
+    # Mock SSH Manager
+    ssh_mock = SSHManager([])
+    migrator = ProcessMigrator(ssh_mock)
+    
+    # Test case: Next.js server
+    process = ProcessInfo(
+        pid=1005,
+        name="next-server",
+        cmdline=["next-server (v15.5.9)"],
+        cpu_percent=10.0,
+        memory_mb=2048,
+    )
+    
+    script = migrator._prepare_migration_script(process, "gpu1")
+    
+    if "npm start" in script and "exec npm start" in script:
+         print(f"  ✓ PID {process.pid}: Correctly identifies next-server and uses npm start")
+    else:
+         print(f"  ✗ PID {process.pid}: Failed to generate correct script. Content:\n{script}")
+
+    # Test case: Standard python
+    process_py = ProcessInfo(
+        pid=1001,
+        name="python",
+        cmdline=["python", "script.py"],
+        cpu_percent=60.0,
+        memory_mb=500,
+    )
+    
+    script_py = migrator._prepare_migration_script(process_py, "gpu1")
+    if "exec python script.py" in script_py:
+        print(f"  ✓ PID {process_py.pid}: Correctly generates python command")
+    else:
+        print(f"  ✗ PID {process_py.pid}: Failed. Content:\n{script_py}")
 
     print()
 
@@ -213,6 +258,7 @@ async def main():
     await test_offloading_detector()
     await test_resource_estimation()
     await test_offloadability_checks()
+    await test_migration_script_generation()
     
     print("=" * 60)
     print("Tests completed!")

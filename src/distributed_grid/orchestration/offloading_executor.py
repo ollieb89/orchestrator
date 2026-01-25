@@ -120,19 +120,31 @@ class ProcessMigrator:
         
         if not cmdline:
             # Fallback if empty
-            cmdline = [process_info.name]
+            # Validate process name before using it as a command
+            safe_name = process_info.name
+            if any(char in safe_name for char in "() ;|&"):
+                 raise ValueError(f"Cannot offload process '{safe_name}': missing command line and name contains unsafe characters")
+            cmdline = [safe_name]
         
         # Detect if this is a Node.js process
         is_node_process = (
             'node' in cmdline[0].lower() or 
-            any('node' in str(arg).lower() for arg in cmdline[:2])
+            any('node' in str(arg).lower() for arg in cmdline[:2]) or
+            "next-server" in cmdline[0]
         )
         
         # Build the command string with proper escaping
         import shlex
         # Filter empty args and convert to string
         clean_cmdline = [str(arg) for arg in cmdline if arg]
-        escaped_cmdline = ' '.join(shlex.quote(arg) for arg in clean_cmdline)
+        
+        # Special handling for Next.js servers masking their name
+        if len(cmdline) > 0 and "next-server" in cmdline[0]:
+            # Next.js servers often rewrite their process title/argv[0] to "next-server (v...)"
+            # which is not a valid executable. We assume we should restart via npm.
+            escaped_cmdline = "npm start"
+        else:
+            escaped_cmdline = ' '.join(shlex.quote(arg) for arg in clean_cmdline)
 
         # Prepare generic NVM script for any node
         # This uses $HOME to support different users (ollie vs ob)
@@ -538,6 +550,16 @@ if __name__ == "__main__":
                         task_id=task.task_id,
                         status=task.status,
                     )
+                    
+                    if task.status == OffloadingStatus.FAILED:
+                        # Fetch logs to understand why it failed
+                        try:
+                            logs = self._job_client.get_job_logs(task.ray_job_id)
+                            task.error_message = logs
+                            logger.error("Job output", task_id=task.task_id, logs=logs)
+                        except Exception as log_err:
+                            logger.error("Failed to fetch job logs", error=str(log_err))
+                            
                     break
                 
                 await asyncio.sleep(5)
