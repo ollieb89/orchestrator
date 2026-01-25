@@ -58,10 +58,22 @@ class ExecutionConfig(BaseModel):
 
 class LoggingConfig(BaseModel):
     """Configuration for logging."""
-    
+
     level: str = Field("INFO", description="Log level")
     format: str = Field("json", description="Log format (json or text)")
     file_path: Optional[Path] = Field(None, description="Log file path")
+
+
+class AutoOffloadConfig(BaseModel):
+    """Configuration for automatic head-node offloading."""
+
+    enabled: bool = Field(False, description="Enable automatic offloading")
+    head_only_mode: bool = Field(True, description="Only offload FROM head node")
+    cpu_threshold: int = Field(80, ge=0, le=100, description="CPU pressure threshold (%)")
+    memory_threshold: int = Field(70, ge=0, le=100, description="Memory pressure threshold (%)")
+    gpu_threshold: int = Field(90, ge=0, le=100, description="GPU pressure threshold (%)")
+    check_interval_seconds: int = Field(5, ge=1, description="Pressure check interval")
+    cooldown_seconds: int = Field(30, ge=0, description="Min time between offloads")
 
 
 class ResourceSharingConfig(BaseModel):
@@ -93,6 +105,10 @@ class ResourceSharingConfig(BaseModel):
             "excess_threshold": 0.2,
         },
         description="Resource availability thresholds"
+    )
+    auto_offload: AutoOffloadConfig = Field(
+        default_factory=AutoOffloadConfig,
+        description="Auto-offload configuration"
     )
 
 
