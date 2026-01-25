@@ -122,10 +122,10 @@ class RayClusterManager:
             
             # Wait for head node to be fully ready (give GCS time to initialize)
             console.print("[blue]Waiting for head node to be fully ready...[/blue]")
-            await asyncio.sleep(30)
+            await asyncio.sleep(45)  # Increased from 30s to 45s for GCS server startup
             
             # Verify GCS is ready before starting workers
-            await self._wait_for_gcs_ready(head_ip, port)
+            await self._wait_for_gcs_ready(head_ip, port, max_retries=20)  # Increased retries
             
             # Start worker nodes
             if worker_nodes:
@@ -163,6 +163,11 @@ class RayClusterManager:
             "RAY_raylet_death_check_interval_ms=10000 "  # Check every 10 seconds
             "RAY_node_manager_timeout_ms=180000 "  # Node manager timeout
             "RAY_gcs_rpc_server_reconnect_timeout_s=300 "  # GCS RPC reconnect timeout
+            "RAY_grpc_keepalive_time_ms=30000 "  # GRPC keepalive every 30 seconds
+            "RAY_grpc_keepalive_timeout_ms=20000 "  # GRPC keepalive timeout
+            "RAY_rpc_server_max_message_length=536870912 "  # 512MB max message size
+            "RAY_grpc_max_send_message_length=536870912 "  # 512MB max send
+            "RAY_grpc_max_recv_message_length=536870912 "  # 512MB max recv
         )
         
         start_cmd = (
@@ -179,7 +184,7 @@ class RayClusterManager:
             f"--include-dashboard=true"
         )
         
-        result = await self.ssh_manager.run_command(head_node.name, start_cmd, timeout=60)
+        result = await self.ssh_manager.run_command(head_node.name, start_cmd, timeout=120)
         if result.exit_status != 0:
             raise RuntimeError(f"Failed to start head node: {result.stderr}")
 
@@ -244,21 +249,17 @@ class RayClusterManager:
         )
     
     async def _start_worker_nodes(self, worker_nodes: List, redis_address: str) -> None:
-        """Start Ray worker nodes."""
-        tasks = []
-        for node in worker_nodes:
-            task = asyncio.create_task(
-                self._start_worker_node(node, redis_address)
-            )
-            tasks.append(task)
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for node, result in zip(worker_nodes, results):
-            if isinstance(result, Exception):
-                console.print(f"[red]✗[/red] Failed to start worker {node.name}: {result}")
-            else:
+        """Start Ray worker nodes with sequential startup to avoid thundering herd."""
+        for i, node in enumerate(worker_nodes):
+            try:
+                if i > 0:
+                    # Add delay between worker startups to avoid overwhelming GCS
+                    await asyncio.sleep(10)
+                
+                await self._start_worker_node(node, redis_address)
                 console.print(f"[green]✓[/green] Worker {node.name} connected")
+            except Exception as e:
+                console.print(f"[red]✗[/red] Failed to start worker {node.name}: {e}")
     
     async def _start_worker_node(self, worker_node, redis_address: str) -> None:
         """Start a Ray worker node."""
@@ -285,6 +286,11 @@ class RayClusterManager:
             "RAY_raylet_death_check_interval_ms=10000 "  # Check every 10 seconds
             "RAY_node_manager_timeout_ms=180000 "  # Node manager timeout
             "RAY_gcs_rpc_server_reconnect_timeout_s=300 "  # GCS RPC reconnect timeout
+            "RAY_grpc_keepalive_time_ms=30000 "  # GRPC keepalive every 30 seconds
+            "RAY_grpc_keepalive_timeout_ms=20000 "  # GRPC keepalive timeout
+            "RAY_rpc_server_max_message_length=536870912 "  # 512MB max message size
+            "RAY_grpc_max_send_message_length=536870912 "  # 512MB max send
+            "RAY_grpc_max_recv_message_length=536870912 "  # 512MB max recv
         )
         
         start_cmd = (
@@ -298,7 +304,7 @@ class RayClusterManager:
             f"--max-worker-port={max_worker_port}"
         )
         
-        result = await self.ssh_manager.run_command(worker_node.name, start_cmd, timeout=60)
+        result = await self.ssh_manager.run_command(worker_node.name, start_cmd, timeout=120)
         if result.exit_status != 0:
             raise RuntimeError(f"Failed to start worker {worker_node.name}: {result.stderr}")
     

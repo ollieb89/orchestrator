@@ -340,55 +340,29 @@ class ResourceSharingOrchestrator:
         """Initialize legacy components without resource sharing."""
         self.legacy_executor = OffloadingExecutor(
             self.ssh_manager,
-            self.cluster_config,
-            self.ray_dashboard_address,
+            self.cluster_config
         )
-        await self.legacy_executor.initialize()
-        
-    async def start(self) -> None:
-        """Start the orchestrator."""
-        if not self._initialized:
-            await self.initialize()
-            
-        if self._running:
-            return
-            
-        self._running = True
-        logger.info("Resource sharing orchestrator started")
-
-    async def run_forever(self) -> None:
-        """Run the orchestrator indefinitely for continuous monitoring and mitigation."""
-        await self.start()
-        
-        logger.info("Orchestrator entering continuous monitoring mode")
-        try:
-            while self._running:
-                # The actual work is done in background tasks (metrics collector loop
-                # and pressure callbacks), so we just wait here.
-                await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            logger.info("Orchestrator continuous monitoring cancelled")
-        finally:
-            await self.stop()
         
     async def stop(self) -> None:
-        """Stop the orchestrator."""
+        """Stop the orchestrator and all components."""
         if not self._running:
             return
             
         self._running = False
         
+        if self._monitoring_task:
+            self._monitoring_task.cancel()
+            try:
+                await self._monitoring_task
+            except asyncio.CancelledError:
+                pass
+
         # Stop components in reverse order
         if self.offloading_detector:
             await self.offloading_detector.stop()
             
         if self.enhanced_executor:
-            # Executor doesn't have explicit stop, but we clean up resources
-            pass
-            
-        if self.intelligent_scheduler:
-            # Scheduler doesn't have explicit stop
-            pass
+            await self.enhanced_executor.stop()
             
         if self.resource_sharing_manager:
             await self.resource_sharing_manager.stop()
@@ -399,12 +373,25 @@ class ResourceSharingOrchestrator:
         if self.distributed_memory_pool:
             await self.distributed_memory_pool.shutdown()
             
-        if self.legacy_executor:
-            # Legacy executor doesn't have explicit stop
-            pass
-            
         logger.info("Resource sharing orchestrator stopped")
         
+    async def run_forever(self) -> None:
+        """Run the orchestrator continuously for background monitoring."""
+        if not self._initialized:
+            await self.initialize()
+            
+        self._running = True
+        logger.info("Orchestrator entering continuous monitoring mode")
+        try:
+            while self._running:
+                # The actual work is done in background tasks (metrics collector loop
+                # and pressure callbacks), so we just wait here.
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.info("Orchestrator continuous monitoring cancelled")
+        finally:
+            await self.stop()
+
     async def execute_offloading(self, recommendation, **kwargs) -> str:
         """Execute offloading using appropriate executor."""
         if self.resource_sharing_enabled and self.enhanced_executor:
@@ -424,13 +411,17 @@ class ResourceSharingOrchestrator:
         }
         
         if self.resource_sharing_enabled:
-            # Add metrics
+            # Add metrics (nested format)
             if self.metrics_collector:
                 status["metrics"] = self.metrics_collector.get_cluster_summary()
+                status["node_snapshots"] = self.get_node_resource_snapshots()
                 
             # Add resource sharing status
             if self.resource_sharing_manager:
                 status["resource_sharing"] = self.resource_sharing_manager.get_resource_status()
+                # Update the snapshots in resource_sharing to use the nested format
+                if "node_snapshots" in status["resource_sharing"]:
+                    status["resource_sharing"]["node_snapshots"] = status["node_snapshots"]
                 
             # Add scheduler status
             if self.intelligent_scheduler:

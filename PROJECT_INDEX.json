@@ -1,0 +1,170 @@
+{
+  "project_name": "distributed-grid",
+  "version": "0.2.0",
+  "generated": "2026-01-25",
+  "python_version": "3.11",
+  "entry_points": {
+    "cli": {
+      "path": "src/distributed_grid/cli.py",
+      "function": "main",
+      "script": "grid"
+    },
+    "api": {
+      "path": "src/distributed_grid/web.py"
+    },
+    "main": {
+      "path": "src/distributed_grid/main.py"
+    }
+  },
+  "modules": {
+    "core": {
+      "path": "src/distributed_grid/core/",
+      "exports": ["GridOrchestrator", "SSHManager", "GridExecutor", "HealthChecker"],
+      "files": ["orchestrator.py", "ssh_manager.py", "executor.py", "health_checker.py"]
+    },
+    "cluster": {
+      "path": "src/distributed_grid/cluster/",
+      "exports": ["RayClusterManager"],
+      "files": ["__init__.py"]
+    },
+    "orchestration": {
+      "path": "src/distributed_grid/orchestration/",
+      "exports": [
+        "JobScheduler",
+        "ResourceManager",
+        "TaskExecutor",
+        "ResourceBoostManager",
+        "ResourceSharingOrchestrator",
+        "IntelligentScheduler",
+        "DistributedMemoryPool",
+        "OffloadingExecutor",
+        "OffloadingDetector"
+      ],
+      "files": [
+        "job_scheduler.py",
+        "resource_manager.py",
+        "task_executor.py",
+        "resource_boost_manager.py",
+        "resource_sharing_orchestrator.py",
+        "intelligent_scheduler.py",
+        "distributed_memory_pool.py",
+        "offloading_executor.py",
+        "offloading_detector.py",
+        "enhanced_offloading_executor.py",
+        "resource_sharing.py",
+        "resource_sharing_manager.py",
+        "resource_sharing_types.py",
+        "resource_sharing_persistence.py",
+        "resource_sharing_state_actor.py",
+        "resource_boost_persistence.py"
+      ]
+    },
+    "config": {
+      "path": "src/distributed_grid/config/",
+      "exports": ["ClusterConfig", "NodeConfig", "ExecutionConfig", "ResourceSharingConfig", "Settings"],
+      "files": ["models.py", "settings.py"]
+    },
+    "monitoring": {
+      "path": "src/distributed_grid/monitoring/",
+      "exports": ["ResourceMetricsCollector", "ResourceSnapshot", "HealthChecker", "MetricsCollector"],
+      "files": ["resource_metrics.py", "health_checker.py", "metrics_collector.py", "alerting.py"]
+    },
+    "memory": {
+      "path": "src/distributed_grid/memory/",
+      "exports": ["DistributedMemoryManager", "DistributedMemoryActor"],
+      "files": ["distributed_memory_manager.py", "distributed_memory_actor.py"]
+    },
+    "api": {
+      "path": "src/distributed_grid/api/",
+      "exports": ["router"],
+      "files": ["v1/router.py", "v1/endpoints/health.py", "v1/endpoints/clusters.py", "v1/endpoints/nodes.py", "v1/endpoints/jobs.py"]
+    },
+    "services": {
+      "path": "src/distributed_grid/services/",
+      "exports": ["ClusterService", "NodeService", "JobService"],
+      "files": ["cluster_service.py", "node_service.py", "job_service.py"]
+    },
+    "schemas": {
+      "path": "src/distributed_grid/schemas/",
+      "exports": ["ClusterSchema", "NodeSchema", "JobSchema"],
+      "files": ["cluster.py", "node.py", "job.py"]
+    },
+    "utils": {
+      "path": "src/distributed_grid/utils/",
+      "exports": ["setup_logging", "retry_async", "MetricsRegistry"],
+      "files": ["logging.py", "retry.py", "metrics.py", "memory_helpers.py", "node_utils.py"]
+    }
+  },
+  "cli_commands": {
+    "cluster": ["install", "start", "stop", "status"],
+    "boost": ["request", "release", "status"],
+    "memory": ["store", "retrieve", "list-objects", "allocate", "deallocate"],
+    "resource_sharing": ["request", "release", "status", "cooldown"],
+    "offload": ["scan"],
+    "top_level": ["init", "config", "version", "run-shared", "shared-status", "monitor", "distribute", "test"]
+  },
+  "configuration": {
+    "default_config": "config/my-cluster-enhanced.yaml",
+    "config_files": [
+      "config/my-cluster.yaml",
+      "config/my-cluster-enhanced.yaml",
+      "config/cluster_config.yaml"
+    ],
+    "config_classes": {
+      "ClusterConfig": {
+        "fields": ["name", "nodes", "execution", "logging", "resource_sharing"]
+      },
+      "NodeConfig": {
+        "fields": ["name", "host", "port", "user", "gpu_count", "memory_gb", "role", "cpu_count", "ssh_key_path", "tags"]
+      },
+      "ExecutionConfig": {
+        "fields": ["default_nodes", "default_gpus_per_node", "timeout_seconds", "retry_attempts", "working_directory", "environment"]
+      },
+      "ResourceSharingConfig": {
+        "fields": ["enabled", "mode", "policy", "monitoring_interval_seconds", "rebalance_interval_seconds", "thresholds"]
+      }
+    }
+  },
+  "tests": {
+    "directory": "tests/",
+    "count": 18,
+    "framework": "pytest",
+    "async_mode": "auto",
+    "fixtures_file": "conftest.py",
+    "key_fixtures": ["sample_cluster_config", "mock_orchestrator", "initialized_orchestrator", "temp_config_file"]
+  },
+  "dependencies": {
+    "runtime": {
+      "ray": "^2.10.0",
+      "paramiko": "^3.0.0",
+      "pyyaml": "^6.0",
+      "prometheus-client": "^0.17.0",
+      "structlog": "^23.1.0",
+      "pydantic": "^2.5.0",
+      "pydantic-settings": "^2.1.0",
+      "rich": "^13.7.0",
+      "typer": "^0.9.0",
+      "click": "^8.0.0",
+      "fastapi": "^0.110.0",
+      "uvicorn": "^0.27.0",
+      "aiofiles": "^23.2.0"
+    },
+    "dev": {
+      "pytest": "^8.0",
+      "pytest-asyncio": "^0.23",
+      "pytest-mock": "^3.12",
+      "ruff": "^0.2",
+      "mypy": "^1.8"
+    }
+  },
+  "commands": {
+    "install": "poetry install",
+    "install_system": "make install-system",
+    "test": "poetry run pytest -v",
+    "test_single": "poetry run pytest tests/test_<name>.py",
+    "lint": "poetry run ruff check .",
+    "format": "poetry run ruff format .",
+    "typecheck": "poetry run mypy src",
+    "clean": "make clean"
+  }
+}

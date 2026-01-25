@@ -113,6 +113,7 @@ class EnhancedOffloadingExecutor:
         # Active tasks and history
         self._active_tasks: Dict[str, Dict[str, Any]] = {}
         self._task_history: List[Dict[str, Any]] = []
+        self._monitoring_tasks: Dict[str, asyncio.Task] = {}
         
         # Ray job client
         self._job_client: Optional[JobSubmissionClient] = None
@@ -202,7 +203,8 @@ class EnhancedOffloadingExecutor:
             self._active_tasks[task_id]["started_at"] = datetime.now(UTC)
             
             # Start monitoring
-            asyncio.create_task(self._monitor_task(task_id, result))
+            monitor_task = asyncio.create_task(self._monitor_task(task_id, result))
+            self._monitoring_tasks[task_id] = monitor_task
             
             return task_id
             
@@ -604,6 +606,26 @@ class EnhancedOffloadingExecutor:
             "node": "gpu-master",
         }
         
+    async def stop(self) -> None:
+        """Stop the executor and cancel all monitoring tasks."""
+        logger.info("Stopping EnhancedOffloadingExecutor and cancelling active tasks")
+        
+        # Cancel all monitoring tasks
+        for task_id, task in self._monitoring_tasks.items():
+            if not task.done():
+                task.cancel()
+                
+        if self._monitoring_tasks:
+            # Wait for tasks to complete cancellation
+            await asyncio.gather(*self._monitoring_tasks.values(), return_exceptions=True)
+            self._monitoring_tasks.clear()
+
+        # Stop child components
+        if self.metrics_collector:
+            await self.metrics_collector.stop()
+        if self.resource_sharing_manager:
+            await self.resource_sharing_manager.stop()
+
     async def _monitor_task(self, task_id: str, execution_result: Dict[str, Any]) -> None:
         """Monitor a running task."""
         try:
@@ -626,6 +648,9 @@ class EnhancedOffloadingExecutor:
                         # Task failed
                         await self._fail_task(task_id, str(e))
                         break
+                    except asyncio.CancelledError:
+                        logger.info("Task monitoring cancelled", task_id=task_id)
+                        raise
                         
                     await asyncio.sleep(1)
                     
@@ -634,9 +659,17 @@ class EnhancedOffloadingExecutor:
                 job_id = execution_result["job_id"]
                 await self._monitor_ray_job(task_id, job_id)
                 
+        except asyncio.CancelledError:
+            logger.info("Monitoring task for task_id was cancelled", task_id=task_id)
+            # Perform cleanup if needed
+            if task_id in self._active_tasks:
+                await self._fail_task(task_id, "Monitoring cancelled during shutdown")
         except Exception as e:
             logger.error("Task monitoring failed", task_id=task_id, error=str(e))
             await self._fail_task(task_id, str(e))
+        finally:
+            if task_id in self._monitoring_tasks:
+                del self._monitoring_tasks[task_id]
             
     async def _monitor_ray_job(self, task_id: str, job_id: str) -> None:
         """Monitor a Ray job with retry logic for propagation delay."""
@@ -650,6 +683,8 @@ class EnhancedOffloadingExecutor:
             while True:
                 try:
                     job_status = self._job_client.get_job_status(job_id)
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
                     if "404" in str(e) and retry_count < max_retries:
                         retry_count += 1
