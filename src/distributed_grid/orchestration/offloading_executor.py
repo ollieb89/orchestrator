@@ -152,20 +152,47 @@ class ProcessMigrator:
             script = f"""#!/bin/bash
 set -e
 
+echo "DEBUG[Migration]: Starting migration wrapper script"
+echo "DEBUG[Migration]: Current User: $(whoami)"
+echo "DEBUG[Migration]: Initial PATH: $PATH"
+
 # Setup NVM environment if available
+# Try common locations
 export NVM_DIR="$HOME/.nvm"
 if [ -s "$NVM_DIR/nvm.sh" ]; then
     source "$NVM_DIR/nvm.sh"
 elif [ -s "/usr/local/nvm/nvm.sh" ]; then
     source "/usr/local/nvm/nvm.sh"
+elif [ -s "/opt/nvm/nvm.sh" ]; then
+    source "/opt/nvm/nvm.sh"
 fi
 
-# Try to put node in path if we know where it is (legacy support for ob on gpu1)
+# Try to put node in path if we know where it is (legacy support for ob on gpu1/gpu2)
 if [ -d "$HOME/.nvm/versions/node/v22.21.1/bin" ]; then
     export PATH="$HOME/.nvm/versions/node/v22.21.1/bin:$PATH"
 fi
 
+echo "DEBUG[Migration]: Post-setup PATH: $PATH"
+
+# Verify environment
+if ! command -v node &> /dev/null; then
+    echo "ERROR[Migration]: 'node' command not found in PATH"
+    exit 127
+fi
+
+# Check for npm if we are likely to use it
+if ! command -v npm &> /dev/null; then
+    echo "WARNING[Migration]: 'npm' command not found in PATH"
+    # Failsafe: try to find it relative to node
+    NODE_BIN=$(dirname $(which node))
+    if [ -f "$NODE_BIN/npm" ]; then
+        echo "DEBUG[Migration]: Found npm relative to node at $NODE_BIN/npm"
+        export PATH="$NODE_BIN:$PATH"
+    fi
+fi
+
 # Execute the migrated process
+echo "DEBUG[Migration]: Executing command: {escaped_cmdline}"
 exec {escaped_cmdline}
 """
         else:
