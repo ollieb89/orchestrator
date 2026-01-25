@@ -147,6 +147,23 @@ async def test_resource_estimation():
             memory_mb=128,
             gpu_memory_mb=0,
         ),
+        ProcessInfo(
+            pid=1004,
+            name="next-server (v15.5.9)",
+            cmdline=[],
+            cpu_percent=5.0,
+            memory_mb=2500,
+            gpu_memory_mb=0,
+        ),
+        ProcessInfo(
+            pid=1005,
+            name="next-server",
+            # This simulates a process that has rewritten its argv[0] to something "pretty" but not a valid command
+            cmdline=["next-server (v15.5.9)"],
+            cpu_percent=10.0,
+            memory_mb=2048,
+            gpu_memory_mb=0,
+        ),
     ]
     
     detector = OffloadingDetector(None, None)  # Mock initialization
@@ -155,6 +172,33 @@ async def test_resource_estimation():
         requirements = detector._estimate_resource_requirements(process)
         print(f"  PID {process.pid}: {requirements}")
     
+    print()
+
+
+async def test_offloadability_checks():
+    """Test offloadability criteria."""
+    from distributed_grid.orchestration.offloading_detector import OffloadingDetector
+    
+    print("Testing offloadability checks:")
+    
+    detector = OffloadingDetector(None, None)  # Mock
+    
+    test_cases = [
+        (ProcessInfo(1, "system", [], 0, 0), False, "System process"),
+        (ProcessInfo(1001, "good", ["python", "script.py"], 60.0, 500), True, "CPU-intensive process"),
+        (ProcessInfo(1002, "memory", ["python", "script.py"], 10.0, 2048), True, "Memory-intensive process (2048MB)"),
+        (ProcessInfo(1003, "missing_cmd", [], 10.0, 2048), False, "Cannot offload: missing command line arguments"),
+        (ProcessInfo(1005, "invalid_cmd", ["next-server (v15.5.9)"], 10.0, 2048), False, "Invalid command line format"),
+    ]
+    
+    for process, expected, reason_part in test_cases:
+        # For the missing_cmd case, we expect it to fail AFTER our fix.
+        # Before the fix, it will likely return True because of high memory.
+        is_offloadable, reason = detector._is_offloadable(process)
+        
+        status = "✓" if is_offloadable == expected else "✗"
+        print(f"  {status} PID {process.pid} ({process.name}): {is_offloadable} - {reason}")
+
     print()
 
 
@@ -168,6 +212,7 @@ async def main():
     await test_process_classification()
     await test_offloading_detector()
     await test_resource_estimation()
+    await test_offloadability_checks()
     
     print("=" * 60)
     print("Tests completed!")

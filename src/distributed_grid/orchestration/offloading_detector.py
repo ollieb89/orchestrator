@@ -347,6 +347,16 @@ if __name__ == "__main__":
         if process.process_type == ProcessType.DAEMON:
             return False, "Daemon/service process"
         
+        # Check if we have a valid command line to restart the process
+        if not process.cmdline or len(process.cmdline) == 0:
+            return False, "Cannot offload: missing command line arguments"
+        
+        # Check first argument for validity as an executable command/path
+        cmd0 = process.cmdline[0]
+        # Reject if it contains unsafe characters and doesn't look like a path
+        if any(c in cmd0 for c in "()<>|&;"):
+             return False, f"Invalid command line format: {cmd0}"
+        
         # Determine if it's a memory-intensive interactive process
         # We previously skipped all interactive processes, but now we allow them if memory-hungry
         is_memory_intensive = process.memory_mb > 1024  # > 1GB
