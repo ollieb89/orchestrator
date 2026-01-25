@@ -28,6 +28,17 @@ grid --help
 grid cluster start -c config/my-cluster-enhanced.yaml
 grid cluster status -c config/my-cluster-enhanced.yaml
 grid boost request gpu-master cpu 2.0 --priority high
+
+# Auto-offload management
+grid offload auto --enable                    # Enable automatic offloading from head node
+grid offload auto --enable --threshold 70     # Enable with custom memory threshold
+grid offload auto --enable --threshold cpu=80 --threshold memory=65 --threshold gpu=90
+grid offload auto --disable                   # Disable automatic offloading
+grid offload auto --status                    # Show current auto-offload status
+
+# Interactive dashboard
+grid offload watch                            # Launch real-time offload dashboard
+grid offload watch --interval 2               # Refresh every 2 seconds
 ```
 
 ## Architecture

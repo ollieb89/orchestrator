@@ -34,7 +34,7 @@ distributed-grid/
 
 ### cli.py
 - **Commands**: `cluster`, `boost`, `memory`, `offload`, `resource_sharing`, `monitor`
-- **Subcommands**: install, start, stop, status, request, release, store, retrieve
+- **Subcommands**: install, start, stop, status, request, release, store, retrieve, auto, watch
 
 ### core/orchestrator.py
 - **Classes**: `GridOrchestrator`, `NodeStatus`, `ClusterStatus`
@@ -103,6 +103,17 @@ grid memory list-objects
 grid resource-sharing request <type> <amount>
 grid resource-sharing release <alloc-id>
 grid resource-sharing status
+
+# Auto-offload management
+grid offload auto --enable                    # Enable automatic offloading
+grid offload auto --enable --threshold 70     # Enable with custom memory threshold
+grid offload auto --enable --threshold cpu=80 --threshold memory=65 --threshold gpu=90
+grid offload auto --disable                   # Disable automatic offloading
+grid offload auto --status                    # Show current auto-offload status
+
+# Interactive dashboard
+grid offload watch                            # Real-time offload monitoring dashboard
+grid offload watch --interval 2               # Refresh every 2 seconds
 ```
 
 ## Test Coverage
