@@ -436,8 +436,8 @@ class OffloadingExecutor:
         """
         runtime_env = {}
         
-        # For gpu1, ensure Node.js and NVM are available
-        if target_node in ['gpu1', '192.168.1.101']:
+        # Apply Node.js/NVM config for ALL remote nodes if it's a node process
+        if target_node != "localhost":
             cmdline = process_info.cmdline if isinstance(process_info.cmdline, list) else []
             # Check basic args for 'node'
             is_node_process = any('node' in str(arg).lower() for arg in cmdline[:2])
