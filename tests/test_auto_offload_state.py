@@ -44,9 +44,8 @@ class TestAutoOffloadState:
         ))
         state_manager.save()
 
-        # Load in new instance
+        # Load in new instance (load is called automatically in __init__)
         loaded = AutoOffloadState(state_file)
-        loaded.load()
 
         assert loaded.enabled is True
         assert loaded.thresholds["cpu"] == 80
@@ -82,3 +81,16 @@ class TestAutoOffloadState:
             ))
 
         assert len(state_manager.recent_events) == 100
+
+    def test_corrupted_state_file(self, state_file):
+        """Test that load() handles invalid JSON gracefully."""
+        # Write invalid JSON to state file
+        state_file.write_text("{ invalid json }")
+
+        # Should not raise, should use defaults
+        state_manager = AutoOffloadState(state_file)
+
+        assert state_manager.enabled is False
+        assert state_manager.thresholds == {"cpu": 80, "memory": 70, "gpu": 90}
+        assert state_manager.active_offloads == []
+        assert state_manager.recent_events == []

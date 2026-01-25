@@ -12,7 +12,7 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-DEFAULT_STATE_FILE = Path("/tmp/grid_offload_state.json")
+DEFAULT_STATE_FILE = Path.home() / ".distributed_grid" / "grid_offload_state.json"
 
 
 @dataclass
@@ -102,13 +102,18 @@ class AutoOffloadState:
 
     def save(self) -> None:
         """Persist state to file."""
-        data = {
-            "enabled": self.enabled,
-            "thresholds": self.thresholds,
-            "active_offloads": self.active_offloads,
-            "recent_events": [e.to_dict() for e in self.recent_events],
-        }
-        self.state_file.write_text(json.dumps(data, indent=2))
+        try:
+            # Ensure parent directory exists
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "enabled": self.enabled,
+                "thresholds": self.thresholds,
+                "active_offloads": self.active_offloads,
+                "recent_events": [e.to_dict() for e in self.recent_events],
+            }
+            self.state_file.write_text(json.dumps(data, indent=2))
+        except OSError as e:
+            logger.warning("Failed to save state file", path=str(self.state_file), error=str(e))
 
     def load(self) -> None:
         """Load state from file."""
