@@ -2335,9 +2335,50 @@ def auto(enable: bool, disable: bool, show_status: bool, threshold: tuple[str, .
         console.print(f"  Memory threshold: {thresholds['memory']}%")
         console.print(f"  GPU threshold: {thresholds['gpu']}%")
 
+        # Check if daemon is running, if not start it
+        pid_file = Path("/tmp/grid_orchestrator.pid")
+        daemon_running = False
+        if pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)  # Check if process exists
+                daemon_running = True
+            except (ProcessLookupError, ValueError):
+                pid_file.unlink(missing_ok=True)
+
+        if not daemon_running:
+            console.print("\n[cyan]Starting monitoring daemon...[/cyan]")
+            # Start daemon in background
+            config_path = Path("config/my-cluster-enhanced.yaml")
+            if not config_path.exists():
+                # Try to find config
+                for alt_path in [Path("config/cluster.yaml"), Path("cluster.yaml")]:
+                    if alt_path.exists():
+                        config_path = alt_path
+                        break
+
+            try:
+                subprocess.Popen(
+                    ["grid", "daemon", "start", "-c", str(config_path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                time.sleep(2)  # Give daemon time to start
+                if pid_file.exists():
+                    console.print("[green]✓ Monitoring daemon started[/green]")
+                else:
+                    console.print("[yellow]⚠ Daemon may not have started - check manually with 'grid daemon status'[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]⚠ Could not start daemon: {e}[/yellow]")
+                console.print("[dim]Start manually with: grid daemon start[/dim]")
+        else:
+            console.print("[dim]Monitoring daemon already running[/dim]")
+
     elif disable:
         state.disable()
         console.print("[yellow]Auto-offload disabled[/yellow]")
+        console.print("[dim]Note: Daemon continues running for other monitoring tasks[/dim]")
 
     elif show_status:
         status_str = "[green]Enabled[/green]" if state.enabled else "[red]Disabled[/red]"

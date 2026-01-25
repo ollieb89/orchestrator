@@ -28,6 +28,7 @@ from distributed_grid.orchestration.enhanced_offloading_executor import (
 from distributed_grid.orchestration.offloading_detector import OffloadingDetector
 from distributed_grid.orchestration.offloading_executor import OffloadingExecutor
 from distributed_grid.orchestration.distributed_memory_pool import DistributedMemoryPool
+from distributed_grid.orchestration.auto_offload_state import AutoOffloadState
 
 logger = structlog.get_logger(__name__)
 
@@ -108,8 +109,31 @@ class ResourceSharingOrchestrator:
         )
         # Register pressure callback for automatic mitigation
         self.metrics_collector.register_pressure_callback(self._handle_resource_pressure)
+
+        # Check for auto-offload state and configure metrics collector
+        try:
+            auto_offload_state = AutoOffloadState()
+            if auto_offload_state.enabled:
+                # Enable head-only mode (only trigger offloads from head node)
+                self.metrics_collector.set_head_only_mode(True)
+                # Set pressure thresholds from auto-offload config
+                memory_threshold = auto_offload_state.thresholds.get("memory", 70) / 100.0
+                cpu_threshold = auto_offload_state.thresholds.get("cpu", 80) / 100.0
+                self.metrics_collector.set_pressure_thresholds(
+                    memory_threshold=memory_threshold,
+                    cpu_threshold=cpu_threshold,
+                )
+                logger.info(
+                    "Auto-offload enabled",
+                    head_only_mode=True,
+                    memory_threshold=f"{memory_threshold*100:.0f}%",
+                    cpu_threshold=f"{cpu_threshold*100:.0f}%",
+                )
+        except Exception as e:
+            logger.warning("Could not load auto-offload state", error=str(e))
+
         await self.metrics_collector.start()
-        
+
         # Map string policy to enum
         policy_map = {
             "conservative": SharingPolicy.CONSERVATIVE,

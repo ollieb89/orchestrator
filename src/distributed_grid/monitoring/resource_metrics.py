@@ -176,6 +176,23 @@ class ResourceMetricsCollector:
             "Head-only mode updated", enabled=enabled, head_node=self._head_node_id
         )
 
+    def set_pressure_thresholds(
+        self, memory_threshold: float = 0.85, cpu_threshold: float = 0.85
+    ) -> None:
+        """Set pressure thresholds for triggering callbacks.
+
+        Args:
+            memory_threshold: Memory pressure threshold (0.0-1.0). Default 0.85 (85%).
+            cpu_threshold: CPU pressure threshold (0.0-1.0). Default 0.85 (85%).
+        """
+        self._memory_threshold_high = memory_threshold
+        self._cpu_threshold_high = cpu_threshold
+        logger.info(
+            "Pressure thresholds updated",
+            memory_threshold=f"{memory_threshold*100:.0f}%",
+            cpu_threshold=f"{cpu_threshold*100:.0f}%",
+        )
+
     async def start(self) -> None:
         """Start resource monitoring."""
         if self._running:
@@ -243,6 +260,8 @@ class ResourceMetricsCollector:
         while self._running:
             try:
                 await self._collect_all_metrics()
+                # Check for pressure events and trigger callbacks
+                self._check_pressure_events()
                 await asyncio.sleep(self.collection_interval)
             except asyncio.CancelledError:
                 break
