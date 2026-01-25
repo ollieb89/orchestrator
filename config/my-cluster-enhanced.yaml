@@ -55,6 +55,8 @@ nodes:
     priority: 1.0
 - cpu_count: 6
   gpu_count: 1
+  ray_start_params:
+    resources: '{"node:gpu1": 1}'  # Register this node label
   host: gpu1
   memory_gb: 16
   name: gpu1
