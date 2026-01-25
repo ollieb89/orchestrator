@@ -104,44 +104,125 @@ class ProcessMigrator:
             "command": " ".join(process.cmdline),
         }
     
+    def _prepare_migration_script(self, process_info: ProcessInfo, target_node: str) -> str:
+        """
+        Prepare migration script with specialized handling for Node.js processes.
+        
+        Args:
+            process_info: Information about the process to migrate
+            target_node: Target node identifier (e.g., 'gpu1', '192.168.1.101')
+            
+        Returns:
+            Bash script content as string
+        """
+        # Extract command line from ProcessInfo
+        cmdline = process_info.cmdline if isinstance(process_info.cmdline, list) else []
+        
+        if not cmdline:
+            # Fallback if empty
+            cmdline = [process_info.name]
+        
+        # Detect if this is a Node.js process
+        is_node_process = (
+            'node' in cmdline[0].lower() or 
+            any('node' in str(arg).lower() for arg in cmdline[:2])
+        )
+        
+        # Check if target is gpu1 (needs NVM setup)
+        needs_nvm = target_node in ['gpu1', '192.168.1.101']
+        
+        # Build the command string with proper escaping
+        import shlex
+        # Filter empty args and convert to string
+        clean_cmdline = [str(arg) for arg in cmdline if arg]
+        escaped_cmdline = ' '.join(shlex.quote(arg) for arg in clean_cmdline)
+        
+        # Generate script based on process type and target
+        if is_node_process and needs_nvm:
+            script = f"""#!/bin/bash
+set -e
+
+# Setup NVM environment for Node.js processes on gpu1
+export NVM_DIR="/home/ob/.nvm"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+    source "$NVM_DIR/nvm.sh"
+fi
+
+# Ensure Node.js is in PATH
+export PATH="/home/ob/.nvm/versions/node/v22.21.1/bin:$PATH"
+export HOME="/home/ob"
+export USER="ob"
+
+# Execute the migrated process
+exec {escaped_cmdline}
+"""
+        else:
+            # Standard migration script
+            script = f"""#!/bin/bash
+set -e
+
+# Execute the migrated process
+exec {escaped_cmdline}
+"""
+        
+        return script
+
     async def create_migration_script(
         self,
         process: ProcessInfo,
         state: Dict,
         target_env: Dict[str, str],
+        target_node: str,
     ) -> str:
         """Create a script to restart the process on the target node."""
         
-        script = f"""#!/bin/bash
-set -e
-
-# Migration script for process {process.name} (PID: {process.pid})
-# Generated at {datetime.now(UTC).isoformat()}
-
-# Set up environment
-export MIGRATED_FROM_PID={process.pid}
-export MIGRATION_TIME={datetime.now(UTC).isoformat()}
-"""
+        # Get base script with NVM setup if needed
+        base_script = self._prepare_migration_script(process, target_node)
+        
+        # Generate environment exports
+        env_exports_list = []
+        
+        # Add migration metadata
+        env_exports_list.append(f'export MIGRATED_FROM_PID={process.pid}')
+        env_exports_list.append(f'export MIGRATION_TIME={datetime.now(UTC).isoformat()}')
         
         # Add environment variables
+        import shlex
         for key, value in target_env.items():
-            script += f'export {key}="{value}"\n'
+            env_exports_list.append(f'export {key}={shlex.quote(str(value))}')
         
         # Add original environment (filtered)
-        for key, value in state["environment"].items():
-            if not key.startswith(("SSH_", "DISPLAY", "XDG_")):
-                # Escape special characters in value
-                escaped_value = value.replace('"', '\\"')
-                script += f'export {key}="{escaped_value}"\n'
+        if state.get("environment"):
+            for key, value in state["environment"].items():
+                if not key.startswith(("SSH_", "DISPLAY", "XDG_")):
+                    env_exports_list.append(f'export {key}={shlex.quote(str(value))}')
         
-        # Change to working directory
-        if state["working_dir"]:
-            script += f'\ncd "{state["working_dir"]}"\n'
+        env_exports = '\n'.join(env_exports_list)
         
-        # Add the command
-        script += f"\n# Restart the process\n{state['command']}\n"
+        # Handle working directory
+        cwd_cmd = ""
+        if state.get("working_dir"):
+            cwd_cmd = f'\n# Change to working directory\ncd "{state["working_dir"]}"\n'
+            
+        # Insert environment exports before the exec command
+        script_lines = base_script.split('\n')
         
-        return script
+        try:
+            # Find where to insert (before exec)
+            exec_line_idx = next(
+                i for i, line in enumerate(script_lines) 
+                if line.strip().startswith('exec ')
+            )
+            
+            # Insert logic
+            script_lines.insert(exec_line_idx, cwd_cmd)
+            script_lines.insert(exec_line_idx, '\n# Restore process environment\n' + env_exports + '\n')
+            
+            return '\n'.join(script_lines)
+            
+        except StopIteration:
+            # Fallback if no exec line found (should not happen with _prepare_migration_script)
+            return base_script
 
 
 class OffloadingExecutor:
@@ -198,7 +279,19 @@ class OffloadingExecutor:
             
             # Step 2: Submit to Ray
             task.status = OffloadingStatus.SUBMITTING
-            ray_job_id = await self._submit_ray_job(task, runtime_env)
+            
+            # Prepare specialized runtime env if not provided
+            if runtime_env is None:
+                runtime_env_config = self._prepare_runtime_env(
+                    task.recommendation.target_node,
+                    recommendation.process
+                )
+                # Combine with basic env if needed, or pass as is
+                # For now, we will merge it into the submit call
+            else:
+                runtime_env_config = runtime_env
+
+            ray_job_id = await self._submit_ray_job(task, runtime_env_config)
             task.ray_job_id = ray_job_id
             
             # Step 3: Monitor
@@ -244,6 +337,7 @@ class OffloadingExecutor:
             process,
             state,
             target_env,
+            task.recommendation.target_node,
         )
         
         task.progress["migration_script"] = migration_script
@@ -308,6 +402,41 @@ class OffloadingExecutor:
             
             logger.info("Ray job submitted", task_id=task.task_id, job_id=job_id)
             return job_id
+    
+    def _prepare_runtime_env(
+        self, 
+        target_node: str, 
+        process_info: ProcessInfo
+    ) -> Dict[str, Any]:
+        """
+        Prepare Ray runtime environment based on target node and process type.
+        
+        Args:
+            target_node: Target node identifier
+            process_info: Process information
+            
+        Returns:
+            Runtime environment dictionary for Ray
+        """
+        runtime_env = {}
+        
+        # For gpu1, ensure Node.js and NVM are available
+        if target_node in ['gpu1', '192.168.1.101']:
+            cmdline = process_info.cmdline if isinstance(process_info.cmdline, list) else []
+            # Check basic args for 'node'
+            is_node_process = any('node' in str(arg).lower() for arg in cmdline[:2])
+            
+            if is_node_process:
+                runtime_env = {
+                    "env_vars": {
+                        "NVM_DIR": "/home/ob/.nvm",
+                        "PATH": "/home/ob/.nvm/versions/node/v22.21.1/bin:/home/ob/.local/bin:/usr/local/bin:/usr/bin:/bin",
+                        "HOME": "/home/ob",
+                        "USER": "ob"
+                    }
+                }
+        
+        return runtime_env
     
     def _create_ray_job_wrapper(self, task: OffloadingTask) -> str:
         """Create a Python wrapper script for the Ray job."""

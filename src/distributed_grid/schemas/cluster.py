@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, validator
 
 
 class ClusterBase(BaseModel):
@@ -35,8 +35,7 @@ class Cluster(ClusterBase):
     node_count: int = 0
     status: str = "active"
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ClusterSummary(BaseModel):
@@ -47,5 +46,4 @@ class ClusterSummary(BaseModel):
     status: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

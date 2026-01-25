@@ -9,6 +9,7 @@ from datetime import timedelta
 
 import ray
 import structlog
+import shlex
 
 from distributed_grid.config import ClusterConfig
 from distributed_grid.core.ssh_manager import SSHManager
@@ -80,24 +81,36 @@ class ResourceSharingOrchestrator:
         # Track PIDs being offloaded to prevent duplicate submissions
         self._offloading_pids: set = set()
         
-        def _submit_offload_job(self, process_info, target_node):
-    """Submit process to Ray for execution on target node."""
-    
-        # Detect if this is a Node.js process
+    def _submit_offload_job(self, process_info: Dict[str, Any], target_node: str) -> Optional[str]:
+        """Submit process to Ray for execution on target node."""
         cmdline = process_info.get('cmdline', [])
-        is_node_process = any('node' in str(cmd).lower() for cmd in cmdline)
+        if not cmdline:
+            logger.warning("No cmdline for process", pid=process_info.get('pid'))
+            return None
         
-        # Build the command
-        if is_node_process and target_node == 'gpu1':
+        # Filter out empty strings
+        cmdline = [str(arg) for arg in cmdline if arg]
+        
+        # Target node check
+        # TODO: Move these specific IP/hostname checks to a configuration or constant
+        is_gpu1 = target_node in ['gpu1', '192.168.1.101']
+        
+        # Detect if this is a Node.js process
+        is_node_process = 'node' in cmdline[0].lower() or any('node' in str(arg).lower() for arg in cmdline[:2])
+        
+        # Shell-escape arguments
+        escaped_args = ' '.join(shlex.quote(arg) for arg in cmdline)
+        
+        # Build command
+        if is_node_process and is_gpu1:
             # Use wrapper for Node.js on gpu1
-            original_cmd = ' '.join(cmdline)
-            command = f"/home/ob/bin/node-wrapper.sh {original_cmd}"
+            command = f"/home/ob/bin/node-wrapper.sh {escaped_args}"
         else:
-            command = ' '.join(cmdline)
+            command = escaped_args
         
-        # Configure runtime environment based on target node user
+        # Configure runtime environment
         runtime_env = {}
-        if target_node == 'gpu1':
+        if is_gpu1:
             runtime_env = {
                 "env_vars": {
                     "NVM_DIR": "/home/ob/.nvm",
@@ -107,36 +120,25 @@ class ResourceSharingOrchestrator:
                 }
             }
         
-        # Submit the job
-        job_id = ray.job_submission.submit_job(
-            entrypoint=command,
-            runtime_env=runtime_env,
-            resources={f"node:{target_node}": 1}
-        )
-    
-    return job_id
-        self._monitoring_task: Optional[asyncio.Task] = None
+        # Log submission
+        logger.info("Submitting offload job", pid=process_info.get('pid'), command=command[:100])
         
-    async def initialize(self) -> None:
-        """Initialize all components."""
-        if self._initialized:
-            return
+        # Submit to Ray
+        try:
+            # Note: relying on self.ray_client being available on the instance
+            job_id = self.ray_client.submit_job(
+                entrypoint=f"bash -c {shlex.quote(command)}",
+                runtime_env=runtime_env,
+                submission_id=f"offload_{target_node}_{process_info.get('pid')}",
+            )
             
-        logger.info("Initializing resource sharing orchestrator")
-        
-        # Initialize Ray if not already done
-        if not ray.is_initialized():
-            ray.init(address="auto")
+            logger.info("Offload job submitted", job_id=job_id, target=target_node)
+            return job_id
             
-        # Initialize components based on configuration
-        if self.resource_sharing_enabled:
-            await self._initialize_resource_sharing()
-        else:
-            await self._initialize_legacy()
-            
-        self._initialized = True
-        logger.info("Resource sharing orchestrator initialized", sharing_enabled=self.resource_sharing_enabled)
-        
+        except Exception as e:
+            logger.error("Failed to submit offload job", error=str(e), exc_info=True)
+            return None
+
     async def _initialize_resource_sharing(self) -> None:
         """Initialize resource sharing components."""
         config = self.cluster_config.resource_sharing

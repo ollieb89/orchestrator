@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, validator
 
 
 class NodeBase(BaseModel):
@@ -53,8 +53,7 @@ class Node(NodeBase):
     memory_utilization: Optional[float] = None
     active_jobs: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class NodeStatus(BaseModel):
@@ -80,5 +79,4 @@ class NodeSummary(BaseModel):
     status: str
     active_jobs: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

@@ -28,6 +28,7 @@ rich = "^13.7.0"
 typer = "^0.9.0"
 fastapi = "^0.110.0"
 uvicorn = {version = "^0.27.0", extras = ["standard"]}
+psutil = "^7.2.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

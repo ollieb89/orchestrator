@@ -1177,7 +1177,7 @@ def execute(
                 await executor.initialize()
                 
                 # Find the process
-                recommendations = await detector.detect_offloading_candidates()
+                recommendations = await detector.detect_offloading_candidates(target_node=target_node)
                 
                 # Find the specific PID
                 target_rec = None

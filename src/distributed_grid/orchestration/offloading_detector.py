@@ -442,6 +442,10 @@ if __name__ == "__main__":
                 # Find suitable target nodes (only workers, not master)
                 suitable_targets = await self._find_suitable_targets(process, source_node, exclude_master=True)
                 
+                # Filter by target node if specified
+                if target_node:
+                    suitable_targets = [t for t in suitable_targets if t[0] == target_node]
+                
                 for target_node, match_info in suitable_targets:
                     recommendation = OffloadingRecommendation(
                         process=process,

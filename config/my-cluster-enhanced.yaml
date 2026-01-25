@@ -56,7 +56,8 @@ nodes:
 - cpu_count: 6
   gpu_count: 1
   ray_start_params:
-    resources: '{"node:gpu1": 1}'  # Register this node label
+    resources: '{"node:gpu1": 1}'
+    node-ip-address: 192.168.1.101
   host: gpu1
   memory_gb: 16
   name: gpu1
@@ -73,8 +74,14 @@ nodes:
     max_share_memory_gb: 8
     max_share_gpu: 1
     priority: 0.8
+    initialization_commands:
+    - ray stop || true
+
 - cpu_count: 8
   gpu_count: 1
+  ray_start_params:
+    resources: '{"node:gpu2": 1}'
+    node-ip-address: 192.168.1.102
   host: gpu2
   memory_gb: 32
   name: gpu2

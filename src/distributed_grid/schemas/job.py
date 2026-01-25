@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, validator
 
 
 class JobBase(BaseModel):
@@ -63,8 +63,7 @@ class Job(JobBase):
     error_message: Optional[str] = None
     logs: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JobStatus(BaseModel):
@@ -87,8 +86,7 @@ class JobSummary(BaseModel):
     progress: float
     assigned_nodes: List[str]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JobExecution(BaseModel):
