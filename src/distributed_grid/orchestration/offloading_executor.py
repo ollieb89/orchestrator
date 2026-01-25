@@ -128,30 +128,30 @@ class ProcessMigrator:
             any('node' in str(arg).lower() for arg in cmdline[:2])
         )
         
-        # Check if target is gpu1 (needs NVM setup)
-        needs_nvm = target_node in ['gpu1', '192.168.1.101']
-        
         # Build the command string with proper escaping
         import shlex
         # Filter empty args and convert to string
         clean_cmdline = [str(arg) for arg in cmdline if arg]
         escaped_cmdline = ' '.join(shlex.quote(arg) for arg in clean_cmdline)
-        
-        # Generate script based on process type and target
-        if is_node_process and needs_nvm:
+
+        # Prepare generic NVM script for any node
+        # This uses $HOME to support different users (ollie vs ob)
+        if is_node_process:
             script = f"""#!/bin/bash
 set -e
 
-# Setup NVM environment for Node.js processes on gpu1
-export NVM_DIR="/home/ob/.nvm"
+# Setup NVM environment if available
+export NVM_DIR="$HOME/.nvm"
 if [ -s "$NVM_DIR/nvm.sh" ]; then
     source "$NVM_DIR/nvm.sh"
+elif [ -s "/usr/local/nvm/nvm.sh" ]; then
+    source "/usr/local/nvm/nvm.sh"
 fi
 
-# Ensure Node.js is in PATH
-export PATH="/home/ob/.nvm/versions/node/v22.21.1/bin:$PATH"
-export HOME="/home/ob"
-export USER="ob"
+# Try to put node in path if we know where it is (legacy support for ob on gpu1)
+if [ -d "$HOME/.nvm/versions/node/v22.21.1/bin" ]; then
+    export PATH="$HOME/.nvm/versions/node/v22.21.1/bin:$PATH"
+fi
 
 # Execute the migrated process
 exec {escaped_cmdline}
@@ -388,6 +388,10 @@ class OffloadingExecutor:
                     "working_dir": str(temp_path),
                     "env_vars": task.progress["target_env"],
                 }
+            else:
+                # Ensure working_dir is set so the job can find the wrapper script
+                if "working_dir" not in runtime_env:
+                    runtime_env["working_dir"] = str(temp_path)
             
             # Submit the job
             job_id = self._job_client.submit_job(
