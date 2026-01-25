@@ -29,6 +29,7 @@ from distributed_grid.orchestration.resource_sharing_manager import ResourceType
 from distributed_grid.orchestration.offloading_detector import OffloadingDetector
 from distributed_grid.orchestration.offloading_executor import OffloadingExecutor
 from distributed_grid.orchestration.auto_offload_state import AutoOffloadState
+from distributed_grid.tui import OffloadDashboard
 
 console = Console()
 
@@ -2403,6 +2404,33 @@ def monitor(config: Path, interval: int, duration: Optional[int], auto_heal: boo
     monitor.alert_threshold = alert_threshold
     
     asyncio.run(monitor.start_monitoring(interval, duration, auto_heal))
+
+
+@offload.command()
+@click.option(
+    "--interval",
+    "-i",
+    type=float,
+    default=1.0,
+    help="Refresh interval in seconds",
+)
+def watch(interval: float) -> None:
+    """Launch interactive dashboard for monitoring auto-offload.
+
+    Shows real-time metrics for head node and workers, active offloads,
+    and recent events.
+
+    Examples:
+        grid offload watch
+        grid offload watch --interval 2
+    """
+    state = AutoOffloadState()
+    dashboard = OffloadDashboard(state=state, refresh_interval=interval)
+
+    try:
+        asyncio.run(dashboard.run())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Dashboard stopped.[/yellow]")
 
 
 @cli.group()
