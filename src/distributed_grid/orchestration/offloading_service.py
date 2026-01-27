@@ -82,3 +82,12 @@ class OffloadingService:
         self.state.enabled = True
         self.state.thresholds = thresholds
         self.state.save()
+
+    async def status(self) -> dict:
+        return {
+            "enabled": self.state.enabled,
+            "thresholds": self.state.thresholds,
+            "active_offloads": self.state.active_offloads,
+            "recent_events": [e.to_dict() for e in self.state.recent_events],
+            "queue_depth": 0,
+        }

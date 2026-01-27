@@ -23,6 +23,9 @@ class DummyOffloadingService:
     async def shutdown(self):
         return None
 
+    async def status(self):
+        return {"queue_depth": 3, "enabled": False, "active_offloads": [], "recent_events": []}
+
 
 def test_offload_execute_prompts_for_pid(sample_cluster_config, monkeypatch):
     monkeypatch.setattr(cli_module, "OffloadingService", DummyOffloadingService)
@@ -36,3 +39,16 @@ def test_offload_execute_prompts_for_pid(sample_cluster_config, monkeypatch):
     )
     assert result.exit_code == 0
     assert "Offloading process 123" in result.output
+
+
+def test_offload_status_json(sample_cluster_config, monkeypatch):
+    monkeypatch.setattr(cli_module, "OffloadingService", DummyOffloadingService)
+    monkeypatch.setattr(cli_module.ClusterConfig, "from_yaml", lambda _path: sample_cluster_config)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.cli,
+        ["offload", "status", "--format", "json"],
+    )
+    assert result.exit_code == 0
+    assert "queue_depth" in result.output

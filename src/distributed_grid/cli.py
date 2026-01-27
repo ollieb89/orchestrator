@@ -2109,93 +2109,37 @@ def list_blocks(config: Path) -> None:
     help="Path to cluster configuration file",
 )
 @click.option(
-    "--ray-dashboard",
-    default="http://localhost:8265",
-    help="Ray dashboard address",
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"], case_sensitive=False),
+    default="table",
+    help="Output format",
 )
-def status(config: Path, ray_dashboard: str) -> None:
+def status(config: Path, output_format: str) -> None:
     """Show offloading status and history."""
     setup_logging()
     
     async def _status():
         try:
             cluster_config = ClusterConfig.from_yaml(config)
-            
-            # Initialize SSH manager
-            ssh_manager = SSHManager(cluster_config.nodes)
-            await ssh_manager.initialize()
-            
+            service = OffloadingService(cluster_config)
             try:
-                # Initialize executor
-                executor = OffloadingExecutor(ssh_manager, cluster_config, ray_dashboard)
-                await executor.initialize()
-                
-                # Get statistics
-                stats = await executor.get_offloading_statistics()
-                
-                # Show summary
-                console.print("[bold]Offloading Statistics[/bold]")
-                console.print(f"Total tasks: {stats['total_tasks']}")
-                console.print(f"Active tasks: {stats['active_tasks']}")
-                console.print(f"Completed: {stats['completed_tasks']}")
-                console.print(f"Failed: {stats['failed_tasks']}")
-                console.print(f"Cancelled: {stats['cancelled_tasks']}")
-                
-                if stats['average_duration'] > 0:
-                    console.print(f"Average duration: {stats['average_duration']:.1f}s")
-                
-                # Show active tasks
-                active_tasks = executor.list_active_tasks()
-                if active_tasks:
-                    console.print("\n[bold]Active Tasks[/bold]")
-                    table = Table()
-                    table.add_column("Task ID")
-                    table.add_column("PID", justify="right")
-                    table.add_column("Target")
-                    table.add_column("Status")
-                    table.add_column("Started")
-                    
-                    for task in active_tasks:
-                        table.add_row(
-                            task.task_id,
-                            str(task.recommendation.process.pid),
-                            task.recommendation.target_node,
-                            task.status.value,
-                            task.started_at.strftime("%H:%M:%S") if task.started_at else "",
-                        )
-                    
-                    console.print(table)
-                
-                # Show recent history
-                history = executor.get_task_history(limit=10)
-                if history:
-                    console.print("\n[bold]Recent History[/bold]")
-                    table = Table()
-                    table.add_column("Task ID")
-                    table.add_column("PID", justify="right")
-                    table.add_column("Target")
-                    table.add_column("Status")
-                    table.add_column("Completed")
-                    
-                    for task in reversed(history[-10:]):
-                        status_color = {
-                            "completed": "green",
-                            "failed": "red",
-                            "cancelled": "yellow",
-                        }.get(task.status.value, "")
-                        
-                        table.add_row(
-                            task.task_id,
-                            str(task.recommendation.process.pid),
-                            task.recommendation.target_node,
-                            f"[{status_color}]{task.status.value}[/{status_color}]",
-                            task.completed_at.strftime("%H:%M:%S") if task.completed_at else "",
-                        )
-                    
-                    console.print(table)
-                
+                status_info = await service.status()
             finally:
-                await ssh_manager.close_all()
+                await service.shutdown()
+
+            if output_format == "json":
+                console.print(json.dumps(status_info, indent=2))
+                return
+
+            console.print("[bold]Offloading Status[/bold]")
+            console.print(f"Enabled: {status_info.get('enabled')}")
+            console.print(f"Queue depth: {status_info.get('queue_depth', 0)}")
+            console.print(f"Active offloads: {len(status_info.get('active_offloads', []))}")
+            if status_info.get("recent_events"):
+                console.print("\n[bold]Recent Events[/bold]")
+                for event in status_info["recent_events"][-5:]:
+                    console.print(f"  - {event.get('event_type', 'event')}: {event.get('message', '')}")
                 
         except Exception as e:
             console.print(f"[red]Failed to get status: {e}[/red]")
