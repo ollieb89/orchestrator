@@ -77,3 +77,8 @@ class OffloadingService:
         if not self._executor:
             return None
         return self._executor.get_task_status(task_id)
+
+    def auto_enable(self, interval: int, thresholds: dict) -> None:
+        self.state.enabled = True
+        self.state.thresholds = thresholds
+        self.state.save()
