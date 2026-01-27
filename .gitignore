@@ -187,5 +187,6 @@ temp/
 tmp/
 cluster_state/
 .distributed_grid/
+.worktrees/
 poetry.lock
 poetry.lock
