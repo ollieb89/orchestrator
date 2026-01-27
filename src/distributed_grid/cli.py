@@ -26,8 +26,8 @@ from distributed_grid.core.executor import GridExecutor
 from distributed_grid.core.ssh_manager import SSHManager
 from distributed_grid.orchestration.resource_sharing_orchestrator import ResourceSharingOrchestrator
 from distributed_grid.orchestration.resource_sharing_manager import ResourceType, AllocationPriority
-from distributed_grid.orchestration.offloading_detector import OffloadingDetector
 from distributed_grid.orchestration.offloading_executor import OffloadingExecutor
+from distributed_grid.orchestration.offloading_service import OffloadingService
 from distributed_grid.orchestration.auto_offload_state import AutoOffloadState
 from distributed_grid.tui import OffloadDashboard
 
@@ -61,6 +61,12 @@ def parse_threshold(threshold_args: tuple[str, ...]) -> dict[str, int]:
             thresholds["memory"] = int(arg.strip())
 
     return thresholds
+
+
+def _prompt_if_missing(value: Optional[Any], prompt_text: str, value_type: type = str) -> Any:
+    if value is not None:
+        return value
+    return click.prompt(prompt_text, type=value_type)
 
 
 @click.group()
@@ -1050,34 +1056,26 @@ def scan(config: Path, node: Optional[str], output_format: str) -> None:
     async def _scan():
         try:
             cluster_config = ClusterConfig.from_yaml(config)
-            
-            # Initialize SSH manager
-            ssh_manager = SSHManager(cluster_config.nodes)
-            await ssh_manager.initialize()
-            
+            service = OffloadingService(cluster_config)
             try:
-                # Initialize detector
-                detector = OffloadingDetector(ssh_manager, cluster_config)
-                
-                # Find offloading opportunities
-                recommendations = await detector.detect_offloading_candidates(node)
-                
+                recommendations = await service.scan(target_node=node)
                 if output_format == "json":
                     output = []
                     for rec in recommendations:
-                        output.append({
-                            "pid": rec.process.pid,
-                            "name": rec.process.name,
-                            "source": rec.source_node,
-                            "target": rec.target_node,
-                            "confidence": rec.confidence,
-                            "reason": rec.reason,
-                            "resources": rec.process.resource_requirements,
-                            "complexity": rec.migration_complexity,
-                        })
+                        output.append(
+                            {
+                                "pid": rec.process.pid,
+                                "name": rec.process.name,
+                                "source": rec.source_node,
+                                "target": rec.target_node,
+                                "confidence": rec.confidence,
+                                "reason": rec.reason,
+                                "resources": rec.process.resource_requirements,
+                                "complexity": rec.migration_complexity,
+                            }
+                        )
                     console.print(json.dumps(output, indent=2))
                 else:
-                    # Table format
                     table = Table(title="Offloadable Processes")
                     table.add_column("PID", justify="right")
                     table.add_column("Name")
@@ -1109,9 +1107,8 @@ def scan(config: Path, node: Optional[str], output_format: str) -> None:
                         console.print(f"\n[green]Found {len(recommendations)} offloadable process(es)[/green]")
                     else:
                         console.print("\n[yellow]No offloadable processes found[/yellow]")
-                
             finally:
-                await ssh_manager.close_all()
+                await service.shutdown()
                 
         except Exception as e:
             console.print(f"[red]Scan failed: {e}[/red]")
@@ -1121,7 +1118,7 @@ def scan(config: Path, node: Optional[str], output_format: str) -> None:
 
 
 @offload.command()
-@click.argument("pid", type=int)
+@click.argument("pid", required=False, type=int)
 @click.option(
     "--config",
     "-c",
@@ -1152,7 +1149,7 @@ def scan(config: Path, node: Optional[str], output_format: str) -> None:
     help="Runtime environment JSON for Ray job",
 )
 def execute(
-    pid: int,
+    pid: Optional[int],
     config: Path,
     target_node: Optional[str],
     ray_dashboard: str,
@@ -1165,69 +1162,43 @@ def execute(
     async def _execute():
         try:
             cluster_config = ClusterConfig.from_yaml(config)
-            
-            # Initialize SSH manager
-            ssh_manager = SSHManager(cluster_config.nodes)
-            await ssh_manager.initialize()
-            
+            pid_value = _prompt_if_missing(pid, "PID", int)
+            service = OffloadingService(cluster_config)
             try:
-                # Initialize detector and executor
-                detector = OffloadingDetector(ssh_manager, cluster_config)
-                executor = OffloadingExecutor(ssh_manager, cluster_config, ray_dashboard)
-                await executor.initialize()
-                
-                # Find the process
-                recommendations = await detector.detect_offloading_candidates(target_node=target_node)
-                
-                # Find the specific PID
-                target_rec = None
-                for rec in recommendations:
-                    if rec.process.pid == pid:
-                        if target_node is None or rec.target_node == target_node:
-                            target_rec = rec
-                            break
-                
-                if not target_rec:
-                    console.print(f"[red]Process {pid} not found or not offloadable[/red]")
-                    console.print("Use 'grid offload scan' to see offloadable processes")
-                    return
-                
-                # Parse runtime environment
                 runtime_env_dict = None
                 if runtime_env:
                     runtime_env_dict = json.loads(runtime_env)
-                
-                # Execute offloading
-                console.print(f"[blue]Offloading process {pid} to {target_rec.target_node}...[/blue]")
-                
-                task_id = await executor.execute_offloading(
-                    target_rec,
+
+                console.print(f"[blue]Offloading process {pid_value}...[/blue]")
+
+                task_id = await service.execute(
+                    pid_value,
+                    target_node=target_node,
                     capture_state=capture_state,
                     runtime_env=runtime_env_dict,
+                    ray_dashboard=ray_dashboard,
                 )
-                
+
                 console.print(f"[green]✓[/green] Offloading started with task ID: {task_id}")
-                
-                # Monitor progress
+
                 while True:
-                    task = executor.get_task_status(task_id)
+                    task = service.get_task_status(task_id)
                     if not task:
                         break
-                    
+
                     if task.status.value in ["completed", "failed", "cancelled"]:
                         if task.status.value == "completed":
-                            console.print(f"[green]✓[/green] Offloading completed successfully")
+                            console.print("[green]✓[/green] Offloading completed successfully")
                         else:
                             console.print(f"[red]✗[/red] Offloading {task.status.value}")
                             if task.error_message:
                                 console.print(f"Error: {task.error_message}")
                         break
-                    
+
                     console.print(f"Status: {task.status.value}")
                     await asyncio.sleep(2)
-                
             finally:
-                await ssh_manager.close_all()
+                await service.shutdown()
                 
         except Exception as e:
             console.print(f"[red]Offloading failed: {e}[/red]")
