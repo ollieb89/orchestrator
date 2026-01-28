@@ -25,6 +25,9 @@ grid offload scan --format json
 # Offload specific PID (auto-selects target)
 grid offload execute 12345
 
+# Prompt for PID if omitted (interactive TTY only)
+grid offload execute
+
 # Offload to specific node
 grid offload execute 12345 --target-node gpu1
 
@@ -37,6 +40,9 @@ grid offload execute 12345 --runtime-env '{"env_vars": {"CUDA_VISIBLE_DEVICES": 
 ```bash
 # View offloading statistics and active tasks
 grid offload status
+
+# JSON output
+grid offload status --format json
 ```
 
 ### Cancel Offloading
@@ -44,6 +50,16 @@ grid offload status
 ```bash
 # Cancel active task
 grid offload cancel offload_1701234567_12345
+```
+
+### Watch Live Dashboard
+
+```bash
+# Live TUI dashboard
+grid offload watch
+
+# Custom refresh interval (seconds)
+grid offload watch --interval 2
 ```
 
 ## How It Works
