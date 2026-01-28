@@ -6,5 +6,15 @@ from distributed_grid.monitoring.health_checker import ClusterHealthChecker
 from distributed_grid.monitoring.metrics_collector import MetricsCollector
 from distributed_grid.monitoring.alerting import AlertManager
 from distributed_grid.monitoring.resource_metrics import ResourceMetricsCollector, ResourceSnapshot, ResourceTrend
+from distributed_grid.monitoring.monitor_facade import ClusterSnapshot, MonitorFacade
 
-__all__ = ["ClusterHealthChecker", "MetricsCollector", "AlertManager", "ResourceMetricsCollector", "ResourceSnapshot", "ResourceTrend"]
+__all__ = [
+    "ClusterHealthChecker",
+    "MetricsCollector",
+    "AlertManager",
+    "ResourceMetricsCollector",
+    "ResourceSnapshot",
+    "ResourceTrend",
+    "ClusterSnapshot",
+    "MonitorFacade",
+]

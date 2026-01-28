@@ -90,6 +90,24 @@ class OffloadDashboard:
         """
         self._worker_metrics = workers
 
+    def update_from_snapshot(self, snapshot: Any) -> None:
+        """Update dashboard metrics from a cluster snapshot."""
+        self._head_metrics = {
+            "cpu": snapshot.head.cpu_percent,
+            "memory": snapshot.head.memory_percent,
+            "gpu": snapshot.head.gpu_pressure * 100,
+        }
+        self._worker_metrics = [
+            {
+                "name": name,
+                "cpu": node.cpu_percent,
+                "memory": node.memory_percent,
+                "gpu": node.gpu_pressure * 100,
+                "available": node.overall_pressure < 0.8,
+            }
+            for name, node in snapshot.nodes.items()
+        ]
+
     def build_layout(self) -> Layout:
         """Build the complete dashboard layout."""
         layout = Layout()
